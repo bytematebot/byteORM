@@ -150,7 +150,12 @@ pub mod codegen {
 
         if field.is_sql_default() {
             if let Some(value) = field.get_default_value() {
-                if value.contains("(") && value.contains(")") {
+                let sql_type = postgres_type(&field.type_name);
+                if matches!(
+                sql_type,
+                "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
+            ) || value == "now()"
+                {
                     sql.push_str(&format!(" DEFAULT {}", value));
                 } else {
                     sql.push_str(&format!(" DEFAULT '{}'", value));
@@ -160,6 +165,7 @@ pub mod codegen {
 
         sql
     }
+
 
 
 
