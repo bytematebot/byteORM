@@ -121,7 +121,7 @@ fn discover_schema_files() -> Vec<PathBuf> {
         Err(_) => return vec![],
     };
 
-    let byteorm_dir = current_dir.join("..");
+    let byteorm_dir = current_dir.join("byteorm");
 
     if byteorm_dir.exists() && byteorm_dir.is_dir() {
         println!("📂 Using multi-schema directory: byteorm/");
@@ -149,6 +149,7 @@ fn discover_schema_files() -> Vec<PathBuf> {
 
     vec![]
 }
+
 
 fn load_and_merge_schemas(files: &[PathBuf]) -> Result<Schema, Box<dyn std::error::Error>> {
     let mut all_models = Vec::new();
