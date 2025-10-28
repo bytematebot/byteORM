@@ -293,6 +293,8 @@ fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
         "Boolean" => quote! { bool },
         "Float" => quote! { f64 },
+        "Serial" => quote! { i32 },
+        "Real" => quote! { f32 },
         _ => quote! { String },
     };
 

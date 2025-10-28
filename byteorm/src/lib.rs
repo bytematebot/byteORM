@@ -124,6 +124,10 @@ pub mod codegen {
             "String" => "TEXT",
             "JsonB" => "JSONB",
             "TimestamptZ" => "TIMESTAMP WITH TIME ZONE",
+            "Timestamp" => "TIMESTAMP",
+            "Boolean" => "BOOLEAN",
+            "Real" => "REAL",
+            "Serial" => "SERIAL",
             _ => "TEXT",
         }
     }
