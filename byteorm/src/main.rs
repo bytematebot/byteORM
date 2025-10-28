@@ -176,7 +176,7 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
     fs::create_dir_all(client_path.join("src"))?;
 
     let cargo_toml = generate_client_cargo_toml();
-    fs::write(client_path.join("../../Cargo.toml"), cargo_toml)?;
+    fs::write(client_path.join("Cargo.toml"), cargo_toml)?;   
 
     let lib_rs = rustgen::generate_rust_code(schema);
     fs::write(client_path.join("src/lib.rs"), lib_rs)?;
@@ -189,6 +189,7 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
 
     Ok(())
 }
+
 
 
 fn generate_client_cargo_toml() -> String {
