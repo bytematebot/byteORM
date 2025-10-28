@@ -1,0 +1,24 @@
+WHITESPACE = _{ " " | "\t" }
+COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* }
+
+ident        = @{ (ASCII_ALPHANUMERIC | "_")+ }
+type_name    = @{ (ASCII_ALPHANUMERIC | "_")+ }
+
+attr         = { "@" ~ attr_name ~ args? }
+attr_name    = @{ (ASCII_ALPHANUMERIC | "_")+ }
+
+modifier     = ${ ident ~ args? }
+
+args         = { "(" ~ arg_content ~ ")" }
+arg_content  = @{ arg_char* }
+arg_char     = {
+    "(" ~ arg_char* ~ ")" ~ arg_char*  // Match nested parens recursively
+    | !(")") ~ ANY                      // Or any char except closing paren
+}
+
+nl           = _{ NEWLINE+ }
+
+schema       = { SOI ~ nl? ~ model_decl* ~ nl? ~ EOI }
+model_decl   = { "model" ~ ident ~ "{" ~ nl? ~ field_decl+ ~ nl? ~ "}" ~ nl? }
+field_decl   = { ident ~ type_name ~ field_mods* ~ nl }
+field_mods   = _{ modifier | attr }
