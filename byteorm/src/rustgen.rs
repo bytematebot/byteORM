@@ -1,6 +1,3 @@
-// src/rustgen.rs
-// Complete code generation using quote! for query builders
-
 use quote::{quote, format_ident};
 use proc_macro2::TokenStream;
 use crate::{Schema, Model, Field, Modifier};
@@ -15,12 +12,10 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         use chrono::{DateTime, Utc};
         use tokio_postgres::Client;
 
-        // Helper function for calculating JSON diffs (used by audit)
         fn calculate_json_diff(before: &serde_json::Value, after: &serde_json::Value) -> serde_json::Value {
             let mut diff = serde_json::Map::new();
 
             if let (Some(before_obj), Some(after_obj)) = (before.as_object(), after.as_object()) {
-                // Check for changed and added fields
                 for (key, after_val) in after_obj {
                     if let Some(before_val) = before_obj.get(key) {
                         if before_val != after_val {
@@ -37,7 +32,6 @@ pub fn generate_rust_code(schema: &Schema) -> String {
                     }
                 }
 
-                // Check for removed fields
                 for (key, before_val) in before_obj {
                     if !after_obj.contains_key(key) {
                         diff.insert(key.clone(), serde_json::json!({ "removed": before_val }));
@@ -95,7 +89,6 @@ fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let builder_name = format_ident!("{}Query", model.name);
 
-    // Find primary key field
     let pk_field = model.fields.iter()
         .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)));
 
@@ -158,7 +151,6 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let table_name = model.name.to_lowercase();
 
-    // Generate where_* methods for each field
     let where_methods = model.fields.iter().map(|field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
         let field_name = to_snake_case(&field.name);
@@ -180,13 +172,12 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
         }
     });
 
-    // Check if model has @audit attribute
     let has_audit = model.fields.iter().any(|f| f.get_audit_model().is_some());
 
     let update_method = if has_audit {
         generate_update_with_audit(model)
     } else {
-        quote! {} // No update method for non-audited models yet
+        quote! {}
     };
 
     quote! {
@@ -295,7 +286,6 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
 fn generate_update_with_audit(model: &Model) -> TokenStream {
     let table_name = model.name.to_lowercase();
 
-    // Find the audit field and target model
     let audit_field = model.fields.iter()
         .find(|f| f.get_audit_model().is_some())
         .expect("Called generate_update_with_audit without audit field");
@@ -304,7 +294,6 @@ fn generate_update_with_audit(model: &Model) -> TokenStream {
     let audit_table = audit_model_name.to_lowercase();
     let audited_field_name = &audit_field.name;
 
-    // Find primary key for WHERE clause
     let pk_field = model.fields.iter()
         .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
         .expect("Model must have primary key for audit");
@@ -318,22 +307,18 @@ fn generate_update_with_audit(model: &Model) -> TokenStream {
             new_value: serde_json::Value,
             who: i64,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            // Start transaction
             let transaction = client.transaction().await?;
 
-            // Extract primary key value from conditions (assuming first condition is PK)
             if self.conditions.is_empty() {
                 return Err("No WHERE condition specified for update".into());
             }
 
-            // Parse PK value from condition string (e.g., "guild_id = 123")
             let pk_value: i64 = self.conditions[0]
                 .split('=')
                 .nth(1)
                 .and_then(|s| s.trim().parse().ok())
                 .ok_or("Failed to parse primary key value")?;
 
-            // 1. Get current value (before)
             let before_sql = format!(
                 "SELECT {} FROM {} WHERE {} = $1",
                 #audited_field_name,
@@ -344,7 +329,6 @@ fn generate_update_with_audit(model: &Model) -> TokenStream {
             let before_row = transaction.query_one(&before_sql, &[&pk_value]).await?;
             let before: serde_json::Value = before_row.get(0);
 
-            // 2. Update the main table
             let update_sql = format!(
                 "UPDATE {} SET {} = $1, updated_at = now() WHERE {} = $2",
                 #table_name,
@@ -354,10 +338,8 @@ fn generate_update_with_audit(model: &Model) -> TokenStream {
 
             transaction.execute(&update_sql, &[&new_value, &pk_value]).await?;
 
-            // 3. Calculate diff
             let diff = calculate_json_diff(&before, &new_value);
 
-            // 4. Insert audit record
             let audit_sql = format!(
                 "INSERT INTO {} ({}, who, changed_at, before, after, diff) VALUES ($1, $2, now(), $3, $4, $5)",
                 #audit_table,
@@ -369,16 +351,13 @@ fn generate_update_with_audit(model: &Model) -> TokenStream {
                 &[&pk_value, &who, &before, &new_value, &diff]
             ).await?;
 
-            // 5. Commit transaction
             transaction.commit().await?;
 
-            println!("✅ Updated with audit log");
             Ok(())
         }
     }
 }
 
-// ====== Type Conversion Helpers ======
 
 fn rust_type_from_schema(type_name: &str) -> TokenStream {
     match type_name {
