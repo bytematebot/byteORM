@@ -15,6 +15,8 @@ struct Cli {
 enum Commands {
     /// Push schema to database, run migrations, and generate the byteorm-client crate
     Push,
+    /// Drop all database tables and reset state (dangerous!)
+    Reset,
 }
 
 #[tokio::main]
@@ -101,7 +103,38 @@ async fn main() {
             println!("   [dependencies]");
             println!("   byteorm-client = {{ path = \"generated\" }}");
         }
+        Some(Commands::Reset) => {
+            println!("Resetting database...");
 
+            let client = match db::connect().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Database connection error: {}", e);
+                    return;
+                }
+            };
+
+            let schema_files = discover_schema_files();
+            if schema_files.is_empty() {
+                eprintln!("No schema files found!");
+                return;
+            }
+            let schema = match load_and_merge_schemas(&schema_files) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error loading schemas: {}", e);
+                    return;
+                }
+            };
+
+            // Drop tables
+            if let Err(e) = db::reset_database(&client, &schema).await {
+                eprintln!("Error resetting database: {}", e);
+                return;
+            }
+
+            println!("Database reset complete!");
+        }
         None => {
             println!("ByteORM CLI v0.1.0");
             println!("Commands:");

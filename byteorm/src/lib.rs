@@ -163,19 +163,29 @@ pub mod codegen {
         match change {
             Change::CreateTable(model) => {
                 let mut sql = format!("CREATE TABLE IF NOT EXISTS {} ( ", model.name);
-                let fields_count = model.fields.len();
+                let pk_columns: Vec<String> = model.fields
+                    .iter()
+                    .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+                    .map(|f| f.name.clone())
+                    .collect();
+
                 for (idx, field) in model.fields.iter().enumerate() {
-                    sql.push_str(&field_to_sql(field));
-                    if idx < fields_count - 1 {
-                        sql.push_str(", ");
-                    } else {
-                        sql.push_str(" ");
+                    let mut field_sql = field_to_sql(field);
+                    if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) && pk_columns.len() > 1 {
+                        field_sql = field_sql.replace(" PRIMARY KEY", "");
                     }
+                    sql.push_str(&field_sql);
+                    if idx < model.fields.len() - 1 {
+                        sql.push_str(", ");
+                    }
+                }
+
+                if pk_columns.len() > 1 {
+                    sql.push_str(&format!(", PRIMARY KEY ({}) ", pk_columns.join(", ")));
                 }
                 sql.push_str(");");
                 sql
             }
-
             Change::AddColumn { table, field } => {
                 format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field))
             }
@@ -203,6 +213,7 @@ pub mod codegen {
 pub mod db {
     use tokio_postgres::Client;
     use std::env;
+    use crate::Schema;
 
     pub async fn connect() -> Result<Client, Box<dyn std::error::Error>> {
         let db_url = env::var("DATABASE_URL")
@@ -218,6 +229,20 @@ pub mod db {
 
         Ok(client)
     }
+
+    pub async fn reset_database(client: &tokio_postgres::Client, schema: &Schema) -> Result<(), Box<dyn std::error::Error>> {
+        for model in &schema.models {
+            let table_name = model.name.to_lowercase();
+            let sql = format!("DROP TABLE IF EXISTS {} CASCADE;", table_name);
+            client.execute(&sql, &[]).await?;
+        }
+
+        client.execute("TRUNCATE _byteorm_schema;", &[]).await.ok();
+
+        Ok(())
+    }
+
+
 
     pub async fn execute_sql(client: &Client, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
         for statement in sql.split(';').filter(|s| !s.trim().is_empty()) {

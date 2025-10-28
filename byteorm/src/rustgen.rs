@@ -61,7 +61,8 @@ fn generate_model_struct(model: &Model) -> TokenStream {
     let name = format_ident!("{}", model.name);
     let fields = model.fields.iter().map(|field| {
         let field_name = format_ident!("{}", field.name);
-        let field_type = rust_type_from_schema(&field.type_name);
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
 
         quote! {
             pub #field_name: #field_type
@@ -76,6 +77,7 @@ fn generate_model_struct(model: &Model) -> TokenStream {
     }
 }
 
+
 fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let builder_name = format_ident!("{}Query", model.name);
@@ -89,7 +91,9 @@ fn generate_model_impl(model: &Model) -> TokenStream {
     });
 
     let find_by_id_impl = if let Some(pk) = pk_field {
-        let pk_type = rust_type_from_schema(&pk.type_name);
+        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+
         let pk_name = to_snake_case(&pk.name);
 
         quote! {
@@ -151,7 +155,8 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
 
     let field_methods = model.fields.iter().enumerate().map(|(i, field)| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
-        let field_type = rust_type_from_schema(&field.type_name);
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
 
         quote! {
@@ -279,18 +284,25 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
     }
 }
 
-fn rust_type_from_schema(type_name: &str) -> TokenStream {
-    match type_name {
+fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
+    let base_type = match type_name {
         "BigInt" => quote! { i64 },
         "Int" => quote! { i32 },
         "String" => quote! { String },
         "JsonB" => quote! { serde_json::Value },
-        "TimestamptZ" => quote! { DateTime<Utc> },
+        "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
         "Boolean" => quote! { bool },
         "Float" => quote! { f64 },
         _ => quote! { String },
+    };
+
+    if nullable {
+        quote! { Option<#base_type> }
+    } else {
+        base_type
     }
 }
+
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();

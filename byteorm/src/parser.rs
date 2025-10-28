@@ -39,10 +39,16 @@ fn parse_model(pair: Pair<Rule>) -> Model {
 fn parse_field(pair: Pair<Rule>) -> Field {
     let mut pairs = pair.into_inner();
     let name = pairs.next().unwrap().as_str().to_string();
-    let type_name = pairs.next().unwrap().as_str().to_string();
+    let mut raw_type_name = pairs.next().unwrap().as_str().to_string();
 
     let mut modifiers = Vec::new();
     let mut attributes = Vec::new();
+
+    let mut is_nullable = false;
+    if raw_type_name.ends_with('?') {
+        is_nullable = true;
+        raw_type_name = raw_type_name.trim_end_matches('?').to_string();
+    }
 
     for pair in pairs {
         match pair.as_rule() {
@@ -56,7 +62,18 @@ fn parse_field(pair: Pair<Rule>) -> Field {
         }
     }
 
-    Field { name, type_name, modifiers, attributes }
+    if is_nullable {
+        modifiers.push(Modifier::Nullable);
+    } else if !modifiers.iter().any(|m| matches!(m, Modifier::NotNull | Modifier::PrimaryKey)) {
+        modifiers.push(Modifier::NotNull);
+    }
+
+    Field {
+        name,
+        type_name: raw_type_name,
+        modifiers,
+        attributes,
+    }
 }
 
 fn parse_modifier(pair: Pair<Rule>) -> Result<Modifier, String> {

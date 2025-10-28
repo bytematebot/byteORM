@@ -2,7 +2,7 @@ WHITESPACE = _{ " " | "\t" }
 COMMENT    = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 ident        = @{ (ASCII_ALPHANUMERIC | "_")+ }
-type_name    = @{ (ASCII_ALPHANUMERIC | "_")+ }
+type_name    = @{ (ASCII_ALPHANUMERIC | "_")+ ~ ("?")? }
 
 attr         = { "@" ~ attr_name ~ args? }
 attr_name    = @{ (ASCII_ALPHANUMERIC | "_")+ }
