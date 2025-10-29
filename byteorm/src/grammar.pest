@@ -12,8 +12,8 @@ modifier     = ${ ident ~ args? }
 args         = { "(" ~ arg_content ~ ")" }
 arg_content  = @{ arg_char* }
 arg_char     = {
-    "(" ~ arg_char* ~ ")" ~ arg_char*  // Match nested parens recursively
-    | !(")") ~ ANY                      // Or any char except closing paren
+    "(" ~ arg_char* ~ ")" ~ arg_char*
+    | !(")") ~ ANY       
 }
 
 nl           = _{ NEWLINE+ }
