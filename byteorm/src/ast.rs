@@ -42,6 +42,20 @@ impl Field {
         None
     }
 
+    pub fn is_jsonb_default_file(&self) -> bool {
+        self.get_default_value()
+            .map(|v| v.ends_with(".json"))
+            .unwrap_or(false)
+    }
+
+    pub fn get_jsonb_default_path(&self) -> Option<String> {
+        if self.type_name == "JsonB" && self.is_jsonb_default_file() {
+            self.get_default_value()
+        } else {
+            None
+        }
+    }
+
     pub fn get_audit_model(&self) -> Option<String> {
         for attr in &self.attributes {
             if attr.name == "audit" {
@@ -60,11 +74,7 @@ impl Field {
     }
 
     pub fn is_sql_default(&self) -> bool {
-        if let Some(value) = self.get_default_value() {
-            !value.contains("./") && !value.contains("../")
-        } else {
-            false
-        }
+        self.get_default_value().is_some() && !self.is_jsonb_default_file()
     }
 
 

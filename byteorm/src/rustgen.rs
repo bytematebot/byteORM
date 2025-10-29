@@ -1,13 +1,31 @@
 use quote::{quote, format_ident};
 use proc_macro2::TokenStream;
 use crate::{Schema, Model, Field, Modifier};
+use std::fs;
+use std::collections::HashMap;
 
 pub fn generate_rust_code(schema: &Schema) -> String {
+    let mut jsonb_defaults = HashMap::new();
+    for model in &schema.models {
+        for field in &model.fields {
+            if let Some(path) = field.get_jsonb_default_path() {
+                match fs::read_to_string(&path) {
+                    Ok(content) => {
+                        jsonb_defaults.insert((model.name.clone(), field.name.clone()), content);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Could not read default file '{}': {}", path, e);
+                    }
+                }
+            }
+        }
+    }
+
     let structs_and_impls = schema.models.iter().map(|model| {
         generate_model_with_query_builder(model)
     });
 
-    let client_struct = generate_client_struct(schema);
+    let client_struct = generate_client_struct(schema, &jsonb_defaults);
     let jsonb_ext = generate_jsonb_ext();
 
     let code = quote! {
@@ -15,6 +33,7 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         use chrono::{DateTime, Utc};
         use tokio_postgres::{Client as PgClient, NoTls, Error};
         use std::sync::Arc;
+        use once_cell::sync::Lazy;
 
         fn calculate_json_diff(before: &serde_json::Value, after: &serde_json::Value) -> serde_json::Value {
             let mut diff = serde_json::Map::new();
@@ -124,7 +143,7 @@ fn generate_jsonb_ext() -> TokenStream {
     }
 }
 
-fn generate_client_struct(schema: &Schema) -> TokenStream {
+fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, String), String>) -> TokenStream {
     let model_accessors = schema.models.iter().map(|model| {
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));
         let accessor_struct = format_ident!("{}Accessor", model.name);
@@ -162,7 +181,7 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
             quote! {}
         };
 
-        // Generate JSONB sub-accessors
+        // Generate JSONB sub-accessors with default support
         let jsonb_sub_accessors = if let Some(pk) = pk_field {
             let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
             let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
@@ -174,15 +193,34 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
                 let jsonb_snake = to_snake_case(jsonb_name);
                 let jsonb_field_ident = format_ident!("{}", jsonb_name);
                 let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(jsonb_name));
+                let defaults_const = format_ident!("{}_DEFAULTS", jsonb_snake.to_uppercase());
 
-                let doc_struct = format!("Accessor for the `{}` JSONB field", jsonb_name);
-                let doc_get = format!("Get a string value from `{}` by key", jsonb_name);
-                let doc_get_as = format!("Get a typed value from `{}` by key", jsonb_name);
-                let doc_get_or = format!("Get a value from `{}` with a default fallback", jsonb_name);
-                let doc_has = format!("Check if key exists in `{}`", jsonb_name);
+                // Generate default JSON constant
+                let default_json_init = if let Some(json_content) = jsonb_defaults.get(&(model.name.clone(), jsonb.name.clone())) {
+                    quote! {
+                        static #defaults_const: Lazy<serde_json::Value> = Lazy::new(|| {
+                            serde_json::from_str(#json_content)
+                                .expect(&format!("Failed to parse default JSON for {}.{}", stringify!(#model_name), #jsonb_name))
+                        });
+                    }
+                } else {
+                    quote! {
+                        static #defaults_const: Lazy<serde_json::Value> = Lazy::new(|| {
+                            serde_json::json!({})
+                        });
+                    }
+                };
+
+                let doc_struct = format!("Accessor for the `{}` JSONB field with default fallback support", jsonb_name);
+                let doc_get = format!("Get a string value from `{}` by key (falls back to default if not found)", jsonb_name);
+                let doc_get_as = format!("Get a typed value from `{}` by key (falls back to default if not found)", jsonb_name);
+                let doc_get_or = format!("Get a value from `{}` with a runtime default fallback", jsonb_name);
+                let doc_has = format!("Check if key exists in `{}` (checks both DB and defaults)", jsonb_name);
                 let doc_set = format!("Set a value in `{}` by key (creates/updates the key)", jsonb_name);
 
                 quote! {
+                    #default_json_init
+
                     #[doc = #doc_struct]
                     #[derive(Clone)]
                     pub struct #sub_accessor_struct {
@@ -211,13 +249,28 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
                         pub async fn get(&self, id: #pk_type, key: &str)
                             -> Result<String, Box<dyn std::error::Error + Send + Sync>>
                         {
-                            let record = #query_builder::new()
+
+                            match #query_builder::new()
                                 .#pk_field_name(id)
                                 .first(&self.client)
-                                .await?
-                                .ok_or_else(|| format!("Record with id {:?} not found", id))?;
+                                .await
+                            {
+                                Ok(Some(record)) => {
 
-                            record.#jsonb_field_ident.get_string(key)
+                                    match record.#jsonb_field_ident.get_string(key) {
+                                        Ok(value) => Ok(value),
+                                        Err(_) => {
+
+                                            #defaults_const.get_string(key)
+                                        }
+                                    }
+                                },
+                                Ok(None) => {
+
+                                    #defaults_const.get_string(key)
+                                },
+                                Err(e) => Err(e),
+                            }
                         }
 
                         #[doc = #doc_get_as]
@@ -232,13 +285,20 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
                         where
                             T: serde::de::DeserializeOwned,
                         {
-                            let record = #query_builder::new()
+                            match #query_builder::new()
                                 .#pk_field_name(id)
                                 .first(&self.client)
-                                .await?
-                                .ok_or_else(|| format!("Record with id {:?} not found", id))?;
-
-                            record.#jsonb_field_ident.get_value(key)
+                                .await
+                            {
+                                Ok(Some(record)) => {
+                                    match record.#jsonb_field_ident.get_value(key) {
+                                        Ok(value) => Ok(value),
+                                        Err(_) => #defaults_const.get_value(key),
+                                    }
+                                },
+                                Ok(None) => #defaults_const.get_value(key),
+                                Err(e) => Err(e),
+                            }
                         }
 
                         #[doc = #doc_get_or]
@@ -252,13 +312,10 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
                         where
                             T: serde::de::DeserializeOwned,
                         {
-                            let record = #query_builder::new()
-                                .#pk_field_name(id)
-                                .first(&self.client)
-                                .await?
-                                .ok_or_else(|| format!("Record with id {:?} not found", id))?;
-
-                            Ok(record.#jsonb_field_ident.get_or_default(key, default))
+                            match self.get_as(id, key).await {
+                                Ok(value) => Ok(value),
+                                Err(_) => Ok(default),
+                            }
                         }
 
                         #[doc = #doc_has]
@@ -272,13 +329,15 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
                         pub async fn has(&self, id: #pk_type, key: &str)
                             -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
                         {
-                            let record = #query_builder::new()
+                            match #query_builder::new()
                                 .#pk_field_name(id)
                                 .first(&self.client)
-                                .await?
-                                .ok_or_else(|| format!("Record with id {:?} not found", id))?;
-
-                            Ok(record.#jsonb_field_ident.has_key(key))
+                                .await
+                            {
+                                Ok(Some(record)) => Ok(record.#jsonb_field_ident.has_key(key) || #defaults_const.has_key(key)),
+                                Ok(None) => Ok(#defaults_const.has_key(key)),
+                                Err(e) => Err(e),
+                            }
                         }
 
                         #[doc = #doc_set]
