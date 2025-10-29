@@ -1,4 +1,3 @@
-// src/parser.rs
 use pest::iterators::Pair;
 use crate::ast::*;
 use crate::{Rule, SchemaParser};
@@ -98,7 +97,7 @@ fn parse_modifier(pair: Pair<Rule>) -> Result<Modifier, String> {
 
 fn parse_foreign_key(args: Option<String>) -> Result<Modifier, String> {
     let arg_str = args.ok_or("ForeignKey requires arguments")?;
-    
+
     if let Some(dot_pos) = arg_str.find('.') {
         let model = arg_str[..dot_pos].trim().to_string();
         let field = arg_str[dot_pos + 1..].trim().to_string();

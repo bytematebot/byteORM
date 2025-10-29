@@ -70,6 +70,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
             table: String,
             pk_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync>>,
             set_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            polled: bool,
         }
 
         unsafe impl Send for #upsert_builder_name {}
@@ -81,68 +82,89 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                     table: #table_name.to_string(),
                     pk_values: std::collections::HashMap::new(),
                     set_values: std::collections::HashMap::new(),
+                    polled: false,
                 }
             }
 
             #(#where_methods)*
             #(#set_methods)*
+        }
 
-            pub async fn execute(self) -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>> {
+        impl std::future::Future for #upsert_builder_name {
+            type Output = Result<#model_name, Box<dyn std::error::Error + Send + Sync>>;
+            fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+                if self.polled {
+                    panic!("future polled more than once");
+                }
+                self.polled = true;
+
+                let client = self.client.clone();
+                let table = self.table.clone();
+                let pk_values = std::mem::take(&mut self.pk_values);
+                let set_values = std::mem::take(&mut self.set_values);
+
                 let pk_columns = vec![#(#pk_col_names),*];
-                for pk_col in &pk_columns {
-                    if !self.pk_values.contains_key(pk_col) && !self.set_values.contains_key(pk_col) {
-                        return Err(format!("Missing primary key field: {}", pk_col).into());
+                let conflict_clause = #conflict_clause.to_string();
+
+                let fut = async move {
+                    for pk_col in &pk_columns {
+                        if !pk_values.contains_key(pk_col) && !set_values.contains_key(pk_col) {
+                            return Err(format!("Missing primary key field: {}", pk_col).into());
+                        }
                     }
-                }
+                    let mut all_values = pk_values;
+                    for (k, v) in set_values {
+                        all_values.insert(k, v);
+                    }
+                    if all_values.is_empty() {
+                        return Err("No fields to upsert".into());
+                    }
+                    let mut columns: Vec<&str> = all_values.keys().copied().collect();
+                    columns.sort();
 
-                let mut all_values = self.pk_values;
-                for (k, v) in self.set_values {
-                    all_values.insert(k, v);
-                }
+                    let columns_str = columns.join(", ");
+                    let placeholders: Vec<String> = (1..=columns.len())
+                        .map(|i| format!("${}", i))
+                        .collect();
+                    let placeholders_str = placeholders.join(", ");
 
-                if all_values.is_empty() {
-                    return Err("No fields to upsert".into());
-                }
+                    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+                    for col in &columns {
+                        params.push(all_values.get(col).unwrap().as_ref());
+                    }
 
-                let mut columns: Vec<&str> = all_values.keys().copied().collect();
-                columns.sort();
-
-                let columns_str = columns.join(", ");
-                let placeholders: Vec<String> = (1..=columns.len())
-                    .map(|i| format!("${}", i))
-                    .collect();
-                let placeholders_str = placeholders.join(", ");
-
-                let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
-                for col in &columns {
-                    params.push(all_values.get(col).unwrap().as_ref());
-                }
-
-                let update_columns: Vec<&str> = columns.iter()
-                    .filter(|col| !pk_columns.iter().any(|pk| pk == *col))
-                    .copied()
-                    .collect();
-
-                let sql = if update_columns.is_empty() {
-                    format!(
-                        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
-                        self.table, columns_str, placeholders_str, #conflict_clause
-                    )
-                } else {
-                    let update_clauses: Vec<String> = update_columns.iter()
-                        .map(|col| format!("{} = EXCLUDED.{}", col, col))
+                    let update_columns: Vec<&str> = columns.iter()
+                        .filter(|col| !pk_columns.iter().any(|pk| pk == *col))
+                        .copied()
                         .collect();
 
-                    format!(
-                        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING *",
-                        self.table, columns_str, placeholders_str, #conflict_clause, update_clauses.join(", ")
-                    )
+                    let sql = if update_columns.is_empty() {
+                        format!(
+                            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
+                            table, columns_str, placeholders_str, conflict_clause
+                        )
+                    } else {
+                        let update_clauses: Vec<String> = update_columns.iter()
+                            .map(|col| format!("{} = EXCLUDED.{}", col, col))
+                            .collect();
+
+                        format!(
+                            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING *",
+                            table, columns_str, placeholders_str, conflict_clause, update_clauses.join(", ")
+                        )
+                    };
+
+                    let row = client.query_one(&sql, &params[..]).await?;
+                    Ok(#model_name {
+                        #(#field_gets),*
+                    })
                 };
 
-                let row = self.client.query_one(&sql, &params[..]).await?;
-                Ok(#model_name {
-                    #(#field_gets),*
-                })
+                let mut pinned = std::pin::pin!(fut);
+                match std::future::Future::poll(pinned.as_mut(), cx) {
+                    std::task::Poll::Ready(res) => std::task::Poll::Ready(res),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                }
             }
         }
     }
