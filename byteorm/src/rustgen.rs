@@ -49,7 +49,6 @@ pub fn generate_rust_code(schema: &Schema) -> String {
 
 fn generate_client_struct(schema: &Schema) -> TokenStream {
     let model_accessors = schema.models.iter().map(|model| {
-        let model_name = format_ident!("{}", model.name);
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));
         let accessor_struct = format_ident!("{}Accessor", model.name);
 
@@ -62,6 +61,7 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
         let model_name = format_ident!("{}", model.name);
         let accessor_struct = format_ident!("{}Accessor", model.name);
         let query_builder = format_ident!("{}Query", model.name);
+        let accessor_name = to_snake_case(&model.name);
 
         let pk_field = model.fields.iter()
             .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)));
@@ -85,6 +85,14 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
             #[derive(Clone)]
             pub struct #accessor_struct {
                 client: Arc<PgClient>,
+            }
+
+            impl std::fmt::Debug for #accessor_struct {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.debug_struct(stringify!(#accessor_struct))
+                        .field("client", &"<PgClient>")
+                        .finish()
+                }
             }
 
             impl #accessor_struct {
@@ -122,12 +130,30 @@ fn generate_client_struct(schema: &Schema) -> TokenStream {
         }
     });
 
+    let debug_accessor_fields = schema.models.iter().map(|model| {
+        let accessor_name = to_snake_case(&model.name);
+        let accessor_name_ident = format_ident!("{}", accessor_name);
+
+        quote! {
+            .field(#accessor_name, &self.#accessor_name_ident)
+        }
+    });
+
     quote! {
         #(#accessor_structs)*
 
         pub struct Client {
             client: Arc<PgClient>,
             #(#model_accessors),*
+        }
+
+        impl std::fmt::Debug for Client {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("Client")
+                    .field("client", &"<PgClient>")
+                    #(#debug_accessor_fields)*
+                    .finish()
+            }
         }
 
         impl Client {
