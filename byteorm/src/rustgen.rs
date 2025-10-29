@@ -157,37 +157,121 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
         let model_name = format_ident!("{}", model.name);
         let accessor_struct = format_ident!("{}Accessor", model.name);
         let query_builder = format_ident!("{}Query", model.name);
+        let update_builder = format_ident!("{}Update", model.name);
         let table_name = model.name.to_lowercase();
 
-        let pk_field = model.fields.iter()
-            .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)));
+        let pk_fields: Vec<_> = model.fields.iter()
+            .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+            .collect();
 
         let jsonb_fields: Vec<_> = model.fields.iter()
             .filter(|f| f.type_name == "JsonB")
             .collect();
 
-        let find_unique = if let Some(pk) = pk_field {
-            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+        let find_unique = if !pk_fields.is_empty() {
+            if pk_fields.len() == 1 {
+                let pk = &pk_fields[0];
+                let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
 
-            quote! {
-                pub async fn find_unique(&self, id: #pk_type)
-                    -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-                {
-                    #model_name::find_by_id(&self.client, id).await
+                quote! {
+                    pub async fn find_unique(&self, id: #pk_type)
+                        -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+                    {
+                        #model_name::find_by_id(&self.client, id).await
+                    }
+                }
+            } else {
+                let pk_params = pk_fields.iter().map(|pk| {
+                    let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                    let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                    let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                    quote! { #param_name: #pk_type }
+                });
+
+                let pk_args = pk_fields.iter().map(|pk| {
+                    let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                    quote! { #param_name }
+                });
+
+                quote! {
+                    pub async fn find_unique(&self, #(#pk_params),*)
+                        -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+                    {
+                        #model_name::find_by_composite_pk(&self.client, #(#pk_args),*).await
+                    }
                 }
             }
         } else {
             quote! {}
         };
 
-        // Generate JSONB sub-accessors with default support
-        let jsonb_sub_accessors = if let Some(pk) = pk_field {
-            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
-            let pk_field_name = format_ident!("where_{}", to_snake_case(&pk.name));
-            let pk_col_name = to_snake_case(&pk.name);
+        let find_or_create = if !pk_fields.is_empty() {
+            if pk_fields.len() == 1 {
+                let pk = &pk_fields[0];
+                let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                let pk_col = to_snake_case(&pk.name);
 
+                quote! {
+                    pub async fn find_or_create(&self, id: #pk_type)
+                        -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
+                    {
+                        self.client.execute(
+                            &format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT DO NOTHING", #table_name, #pk_col),
+                            &[&id]
+                        ).await?;
+
+                        self.find_unique(id)
+                            .await?
+                            .ok_or("Record should exist after find_or_create".into())
+                    }
+                }
+            } else {
+                let pk_params = pk_fields.iter().map(|pk| {
+                    let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                    let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                    let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                    quote! { #param_name: #pk_type }
+                });
+
+                let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
+                let pk_cols_str = pk_cols.join(", ");
+                let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
+                let pk_placeholders_str = pk_placeholders.join(", ");
+                let pk_conflict = pk_cols.join(", ");
+
+                let pk_args = pk_fields.iter().map(|pk| {
+                    let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                    quote! { &#param_name }
+                });
+
+                let pk_args_call = pk_fields.iter().map(|pk| {
+                    let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                    quote! { #param_name }
+                });
+
+                quote! {
+                    pub async fn find_or_create(&self, #(#pk_params),*)
+                        -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
+                    {
+                        let sql = format!(
+                            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
+                            #table_name, #pk_cols_str, #pk_placeholders_str, #pk_conflict
+                        );
+                        self.client.execute(&sql, &[#(#pk_args),*]).await?;
+
+                        self.find_unique(#(#pk_args_call),*)
+                            .await?
+                            .ok_or("Record should exist after find_or_create".into())
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        let jsonb_sub_accessors = if !pk_fields.is_empty() {
             jsonb_fields.iter().map(|jsonb| {
                 let jsonb_name = &jsonb.name;
                 let jsonb_snake = to_snake_case(jsonb_name);
@@ -195,7 +279,6 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                 let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(jsonb_name));
                 let defaults_const = format_ident!("{}_DEFAULTS", jsonb_snake.to_uppercase());
 
-                // Generate default JSON constant
                 let default_json_init = if let Some(json_content) = jsonb_defaults.get(&(model.name.clone(), jsonb.name.clone())) {
                     quote! {
                         static #defaults_const: Lazy<serde_json::Value> = Lazy::new(|| {
@@ -211,17 +294,68 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                     }
                 };
 
-                let doc_struct = format!("Accessor for the `{}` JSONB field with default fallback support", jsonb_name);
-                let doc_get = format!("Get a string value from `{}` by key (falls back to default if not found)", jsonb_name);
-                let doc_get_as = format!("Get a typed value from `{}` by key (falls back to default if not found)", jsonb_name);
-                let doc_get_or = format!("Get a value from `{}` with a runtime default fallback", jsonb_name);
-                let doc_has = format!("Check if key exists in `{}` (checks both DB and defaults)", jsonb_name);
-                let doc_set = format!("Set a value in `{}` by key (creates/updates the key)", jsonb_name);
+                let (pk_params, pk_where_methods, pk_args_for_set) = if pk_fields.len() == 1 {
+                    let pk = &pk_fields[0];
+                    let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                    let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                    let pk_field_name = format_ident!("where_{}", to_snake_case(&pk.name));
+
+                    (
+                        quote! { id: #pk_type },
+                        quote! { .#pk_field_name(id) },
+                        vec![quote! { &id }],
+                    )
+                } else {
+                    let params = pk_fields.iter().map(|pk| {
+                        let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                        let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                        quote! { #param_name: #pk_type }
+                    });
+
+                    let where_methods = pk_fields.iter().map(|pk| {
+                        let method_name = format_ident!("where_{}", to_snake_case(&pk.name));
+                        let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                        quote! { .#method_name(#param_name) }
+                    });
+
+                    let set_args = pk_fields.iter().map(|pk| {
+                        let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                        quote! { &#param_name }
+                    });
+
+                    (
+                        quote! { #(#params),* },
+                        quote! { #(#where_methods)* },
+                        set_args.collect::<Vec<_>>(),
+                    )
+                };
+
+                let pk_args_clone = if pk_fields.len() == 1 {
+                    quote! { id }
+                } else {
+                    let args = pk_fields.iter().map(|pk| {
+                        let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                        quote! { #param_name }
+                    });
+                    quote! { #(#args),* }
+                };
+
+                let pk_columns: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
+                let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
+                let insert_pk_part = pk_columns.join(", ");
+                let insert_values_part = pk_placeholders.join(", ");
+                let conflict_clause = pk_columns.join(", ");
+
+                let jsonb_field_param_idx = pk_fields.len() + 1;
+                let key_param_idx = pk_fields.len() + 2;
+                let value_param_idx = pk_fields.len() + 3;
+                let key_path_param_idx = pk_fields.len() + 4;
+                let value_param_idx2 = pk_fields.len() + 5;
 
                 quote! {
                     #default_json_init
 
-                    #[doc = #doc_struct]
                     #[derive(Clone)]
                     pub struct #sub_accessor_struct {
                         client: Arc<PgClient>,
@@ -240,53 +374,32 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                             Self { client }
                         }
 
-                        #[doc = #doc_get]
-                        ///
-                        /// # Example
-                        /// ```
-                        /// let value = client.guild_settings.settings.get(guild_id, "settingsLang").await?;
-                        /// ```
-                        pub async fn get(&self, id: #pk_type, key: &str)
+                        pub async fn get(&self, #pk_params, key: &str)
                             -> Result<String, Box<dyn std::error::Error + Send + Sync>>
                         {
-
                             match #query_builder::new()
-                                .#pk_field_name(id)
+                                #pk_where_methods
                                 .first(&self.client)
                                 .await
                             {
                                 Ok(Some(record)) => {
-
                                     match record.#jsonb_field_ident.get_string(key) {
                                         Ok(value) => Ok(value),
-                                        Err(_) => {
-
-                                            #defaults_const.get_string(key)
-                                        }
+                                        Err(_) => #defaults_const.get_string(key)
                                     }
                                 },
-                                Ok(None) => {
-
-                                    #defaults_const.get_string(key)
-                                },
+                                Ok(None) => #defaults_const.get_string(key),
                                 Err(e) => Err(e),
                             }
                         }
 
-                        #[doc = #doc_get_as]
-                        ///
-                        /// # Example
-                        /// ```
-                        /// let count: i64 = client.guild_settings.settings.get_as(guild_id, "messageCount").await?;
-                        /// let tags: Vec<String> = client.guild_settings.settings.get_as(guild_id, "tags").await?;
-                        /// ```
-                        pub async fn get_as<T>(&self, id: #pk_type, key: &str)
+                        pub async fn get_as<T>(&self, #pk_params, key: &str)
                             -> Result<T, Box<dyn std::error::Error + Send + Sync>>
                         where
                             T: serde::de::DeserializeOwned,
                         {
                             match #query_builder::new()
-                                .#pk_field_name(id)
+                                #pk_where_methods
                                 .first(&self.client)
                                 .await
                             {
@@ -301,36 +414,22 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                             }
                         }
 
-                        #[doc = #doc_get_or]
-                        ///
-                        /// # Example
-                        /// ```
-                        /// let prefix = client.guild_settings.settings.get_or(guild_id, "prefix", "!".to_string()).await?;
-                        /// ```
-                        pub async fn get_or<T>(&self, id: #pk_type, key: &str, default: T)
+                        pub async fn get_or<T>(&self, #pk_params, key: &str, default: T)
                             -> Result<T, Box<dyn std::error::Error + Send + Sync>>
                         where
                             T: serde::de::DeserializeOwned,
                         {
-                            match self.get_as(id, key).await {
+                            match self.get_as(#pk_args_clone, key).await {
                                 Ok(value) => Ok(value),
                                 Err(_) => Ok(default),
                             }
                         }
 
-                        #[doc = #doc_has]
-                        ///
-                        /// # Example
-                        /// ```
-                        /// if client.guild_settings.settings.has(guild_id, "premium").await? {
-                        ///     // Premium is configured
-                        /// }
-                        /// ```
-                        pub async fn has(&self, id: #pk_type, key: &str)
+                        pub async fn has(&self, #pk_params, key: &str)
                             -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
                         {
                             match #query_builder::new()
-                                .#pk_field_name(id)
+                                #pk_where_methods
                                 .first(&self.client)
                                 .await
                             {
@@ -340,13 +439,7 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                             }
                         }
 
-                        #[doc = #doc_set]
-                        ///
-                        /// # Example
-                        /// ```
-                        /// client.guild_settings.settings.set(guild_id, "settingsLang", "en").await?;
-                        /// ```
-                        pub async fn set<T>(&self, id: #pk_type, key: &str, value: T)
+                        pub async fn set<T>(&self, #pk_params, key: &str, value: T)
                             -> Result<(), Box<dyn std::error::Error + Send + Sync>>
                         where
                             T: serde::Serialize + Send + Sync,
@@ -355,21 +448,26 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                             let value_str = value_json.to_string();
 
                             let sql = format!(
-                                "INSERT INTO {} ({}, {}, updated_at) VALUES ($1, jsonb_build_object($2, $3), NOW()) \
-                                 ON CONFLICT ({}) DO UPDATE SET {} = jsonb_set(COALESCE({}.{}, '{{}}'::jsonb), $4, $5, true), updated_at = NOW()",
+                                "INSERT INTO {} ({}, {}, updated_at) VALUES ({}, jsonb_build_object(${}, ${}), NOW()) \
+                                 ON CONFLICT ({}) DO UPDATE SET {} = jsonb_set(COALESCE({}.{}, '{{}}'::jsonb), ${}, ${}, true), updated_at = NOW()",
                                 #table_name,
-                                #pk_col_name,
+                                #insert_pk_part,
                                 #jsonb_snake,
-                                #pk_col_name,
+                                #insert_values_part,
+                                #key_param_idx,
+                                #value_param_idx,
+                                #conflict_clause,
                                 #jsonb_snake,
                                 #table_name,
-                                #jsonb_snake
+                                #jsonb_snake,
+                                #key_path_param_idx,
+                                #value_param_idx2
                             );
 
                             let key_path = format!("{{{}}}", key);
                             self.client.execute(
                                 &sql,
-                                &[&id, &key, &value_str, &key_path, &value_str]
+                                &[#(#pk_args_for_set),*, &key, &value_str, &key_path, &value_str]
                             ).await?;
 
                             Ok(())
@@ -381,7 +479,6 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
             vec![]
         };
 
-        // Fields for JSONB sub-accessors in main accessor
         let jsonb_accessor_fields = jsonb_fields.iter().map(|jsonb| {
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
@@ -392,7 +489,6 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
             }
         });
 
-        // Initialize JSONB sub-accessors
         let jsonb_accessor_inits = jsonb_fields.iter().map(|jsonb| {
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
@@ -442,7 +538,12 @@ fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, Str
                     #query_builder::new()
                 }
 
+                pub fn update(&self) -> #update_builder {
+                    #update_builder::new(self.client.clone())
+                }
+
                 #find_unique
+                #find_or_create
 
                 pub async fn find_first(&self) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>> {
                     #query_builder::new().first(&self.client).await
@@ -523,11 +624,13 @@ fn generate_model_with_query_builder(model: &Model) -> TokenStream {
     let model_struct = generate_model_struct(model);
     let query_builder_struct = generate_query_builder_struct(model);
     let query_builder_impl = generate_query_builder_impl(model);
+    let update_builder = generate_update_builder(model);
     let model_impl = generate_model_impl(model);
 
     quote! {
         #model_struct
         #query_builder_struct
+        #update_builder
         #model_impl
         #query_builder_impl
     }
@@ -557,29 +660,65 @@ fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let builder_name = format_ident!("{}Query", model.name);
 
-    let pk_field = model.fields.iter()
-        .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)));
+    let pk_fields: Vec<_> = model.fields.iter()
+        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+        .collect();
 
     let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
         let field_name = format_ident!("{}", field.name);
         quote! { #field_name: row.get(#idx) }
     });
 
-    let find_by_id_impl = if let Some(pk) = pk_field {
-        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+    let find_by_id_impl = if !pk_fields.is_empty() {
+        if pk_fields.len() == 1 {
+            let pk = &pk_fields[0];
+            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+            let pk_name = to_snake_case(&pk.name);
 
-        let pk_name = to_snake_case(&pk.name);
+            quote! {
+                pub async fn find_by_id(client: &PgClient, id: #pk_type)
+                    -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+                {
+                    let sql = format!("SELECT * FROM {} WHERE {} = $1",
+                        stringify!(#model_name).to_lowercase(), #pk_name);
+                    let row_opt = client.query_opt(&sql, &[&id]).await?;
+                    Ok(row_opt.map(|row| #model_name {
+                        #(#field_gets),*
+                    }))
+                }
+            }
+        } else {
+            let pk_params = pk_fields.iter().map(|pk| {
+                let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                quote! { #param_name: #pk_type }
+            });
 
-        quote! {
-            pub async fn find_by_id(client: &PgClient, id: #pk_type)
-                -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-            {
-                let sql = format!("SELECT * FROM {} WHERE {} = $1", stringify!(#model_name).to_lowercase(), #pk_name);
-                let row_opt = client.query_opt(&sql, &[&id]).await?;
-                Ok(row_opt.map(|row| #model_name {
-                    #(#field_gets),*
-                }))
+            let pk_conditions = pk_fields.iter().enumerate().map(|(i, pk)| {
+                let pk_col = to_snake_case(&pk.name);
+                let param_num = i + 1;
+                format!("{} = ${}", pk_col, param_num)
+            });
+            let where_clause = pk_conditions.collect::<Vec<_>>().join(" AND ");
+
+            let pk_args = pk_fields.iter().map(|pk| {
+                let param_name = format_ident!("{}", to_snake_case(&pk.name));
+                quote! { &#param_name }
+            });
+
+            quote! {
+                pub async fn find_by_composite_pk(client: &PgClient, #(#pk_params),*)
+                    -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+                {
+                    let sql = format!("SELECT * FROM {} WHERE {}",
+                        stringify!(#model_name).to_lowercase(), #where_clause);
+                    let row_opt = client.query_opt(&sql, &[#(#pk_args),*]).await?;
+                    Ok(row_opt.map(|row| #model_name {
+                        #(#field_gets),*
+                    }))
+                }
             }
         }
     } else {
@@ -609,7 +748,6 @@ fn generate_query_builder_struct(model: &Model) -> TokenStream {
             order_by: Vec<(String, String)>,
         }
 
-        // Safety: All types that implement ToSql for common Rust types (i64, String, etc.) are Send
         unsafe impl Send for #builder_name {}
 
         impl Clone for #builder_name {
@@ -622,6 +760,115 @@ fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     offset: self.offset,
                     order_by: self.order_by.clone(),
                 }
+            }
+        }
+    }
+}
+
+fn generate_update_builder(model: &Model) -> TokenStream {
+    let model_name = format_ident!("{}", model.name);
+    let update_builder_name = format_ident!("{}Update", model.name);
+    let table_name = model.name.to_lowercase();
+
+    let where_methods = model.fields.iter().map(|field| {
+        let method_name = format_ident!("where_{}", to_snake_case(&field.name));
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+        let field_col = to_snake_case(&field.name);
+
+        quote! {
+            pub fn #method_name(mut self, value: #field_type) -> Self {
+                self.where_args.push(Box::new(value));
+                self.where_fragments.push((#field_col, self.where_args.len()));
+                self
+            }
+        }
+    });
+
+    let set_methods = model.fields.iter().map(|field| {
+        let method_name = format_ident!("set_{}", to_snake_case(&field.name));
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+        let field_col = to_snake_case(&field.name);
+
+        quote! {
+            pub fn #method_name(mut self, value: #field_type) -> Self {
+                self.set_args.push(Box::new(value));
+                self.set_fragments.push(#field_col);
+                self
+            }
+        }
+    });
+
+    let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
+        let field_name = format_ident!("{}", field.name);
+        quote! { #field_name: row.get(#idx) }
+    });
+
+    quote! {
+        pub struct #update_builder_name {
+            client: Arc<PgClient>,
+            table: String,
+            where_fragments: Vec<(&'static str, usize)>,
+            where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            set_fragments: Vec<&'static str>,
+            set_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
+        }
+
+        unsafe impl Send for #update_builder_name {}
+
+        impl #update_builder_name {
+            pub fn new(client: Arc<PgClient>) -> Self {
+                Self {
+                    client,
+                    table: #table_name.to_string(),
+                    where_fragments: vec![],
+                    where_args: vec![],
+                    set_fragments: vec![],
+                    set_args: vec![],
+                }
+            }
+
+            #(#where_methods)*
+            #(#set_methods)*
+
+            pub async fn execute(self) -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>> {
+                if self.set_fragments.is_empty() {
+                    return Err("No fields to update".into());
+                }
+
+                let mut sql = format!("UPDATE {} SET ", self.table);
+
+                let set_clauses: Vec<String> = self.set_fragments.iter()
+                    .enumerate()
+                    .map(|(i, col)| format!("{} = ${}", col, i + 1))
+                    .collect();
+                sql.push_str(&set_clauses.join(", "));
+
+                let mut all_params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+                for arg in &self.set_args {
+                    all_params.push(arg.as_ref());
+                }
+
+                if !self.where_fragments.is_empty() {
+                    let where_clauses: Vec<String> = self.where_fragments.iter()
+                        .enumerate()
+                        .map(|(i, &(col, _))| format!("{} = ${}", col, self.set_args.len() + i + 1))
+                        .collect();
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&where_clauses.join(" AND "));
+
+                    for arg in &self.where_args {
+                        all_params.push(arg.as_ref());
+                    }
+                }
+
+                sql.push_str(" RETURNING *");
+
+                let row = self.client.query_one(&sql, &all_params[..]).await?;
+                Ok(#model_name {
+                    #(#field_gets),*
+                })
             }
         }
     }
