@@ -7,10 +7,13 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         generate_model_with_query_builder(model)
     });
 
+    let client_struct = generate_client_struct(schema);
+
     let code = quote! {
         use serde::{Deserialize, Serialize};
         use chrono::{DateTime, Utc};
-        use tokio_postgres::Client;
+        use tokio_postgres::{Client as PgClient, NoTls, Error};
+        use std::sync::Arc;
 
         fn calculate_json_diff(before: &serde_json::Value, after: &serde_json::Value) -> serde_json::Value {
             let mut diff = serde_json::Map::new();
@@ -36,11 +39,120 @@ pub fn generate_rust_code(schema: &Schema) -> String {
             serde_json::Value::Object(diff)
         }
 
+        #client_struct
         #(#structs_and_impls)*
     };
 
     let file: syn::File = syn::parse2(code).unwrap();
     prettyplease::unparse(&file)
+}
+
+fn generate_client_struct(schema: &Schema) -> TokenStream {
+    let model_accessors = schema.models.iter().map(|model| {
+        let model_name = format_ident!("{}", model.name);
+        let accessor_name = format_ident!("{}", to_snake_case(&model.name));
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+
+        quote! {
+            pub #accessor_name: #accessor_struct
+        }
+    });
+
+    let accessor_structs = schema.models.iter().map(|model| {
+        let model_name = format_ident!("{}", model.name);
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+        let query_builder = format_ident!("{}Query", model.name);
+
+        let pk_field = model.fields.iter()
+            .find(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)));
+
+        let find_unique = if let Some(pk) = pk_field {
+            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+
+            quote! {
+                pub async fn find_unique(&self, id: #pk_type)
+                    -> Result<Option<#model_name>, Box<dyn std::error::Error>>
+                {
+                    #model_name::find_by_id(&self.client, id).await
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        quote! {
+            #[derive(Clone)]
+            pub struct #accessor_struct {
+                client: Arc<PgClient>,
+            }
+
+            impl #accessor_struct {
+                pub fn new(client: Arc<PgClient>) -> Self {
+                    Self { client }
+                }
+
+                pub fn find_many(&self) -> #query_builder {
+                    #query_builder::new()
+                }
+
+                #find_unique
+
+                pub async fn find_first(&self) -> Result<Option<#model_name>, Box<dyn std::error::Error>> {
+                    #query_builder::new().first(&self.client).await
+                }
+
+                pub async fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
+                    #query_builder::new().count(&self.client).await
+                }
+
+                pub fn client(&self) -> &PgClient {
+                    &self.client
+                }
+            }
+        }
+    });
+
+    let accessor_inits = schema.models.iter().map(|model| {
+        let accessor_name = format_ident!("{}", to_snake_case(&model.name));
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+
+        quote! {
+            #accessor_name: #accessor_struct::new(client.clone())
+        }
+    });
+
+    quote! {
+        #(#accessor_structs)*
+
+        pub struct Client {
+            client: Arc<PgClient>,
+            #(#model_accessors),*
+        }
+
+        impl Client {
+            pub async fn new(connection_string: &str) -> Result<Self, Error> {
+                let (client, connection) = tokio_postgres::connect(connection_string, NoTls).await?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("connection error: {}", e);
+                    }
+                });
+
+                let client = Arc::new(client);
+
+                Ok(Self {
+                    client: client.clone(),
+                    #(#accessor_inits),*
+                })
+            }
+
+            pub fn client(&self) -> &PgClient {
+                &self.client
+            }
+        }
+    }
 }
 
 fn generate_model_with_query_builder(model: &Model) -> TokenStream {
@@ -77,7 +189,6 @@ fn generate_model_struct(model: &Model) -> TokenStream {
     }
 }
 
-
 fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let builder_name = format_ident!("{}Query", model.name);
@@ -97,7 +208,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
         let pk_name = to_snake_case(&pk.name);
 
         quote! {
-            pub async fn find_by_id(client: &Client, id: #pk_type)
+            pub async fn find_by_id(client: &PgClient, id: #pk_type)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error>>
             {
                 let sql = format!("SELECT * FROM {} WHERE {} = $1", stringify!(#model_name).to_lowercase(), #pk_name);
@@ -199,7 +310,7 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
                 self
             }
 
-            pub async fn select(&self, client: &Client)
+            pub async fn select(&self, client: &PgClient)
                 -> Result<Vec<#model_name>, Box<dyn std::error::Error>>
             {
                 let (sql, params) = self.build_select();
@@ -211,7 +322,7 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
                 Ok(results)
             }
 
-            pub async fn first(&self, client: &Client)
+            pub async fn first(&self, client: &PgClient)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error>>
             {
                 let mut query = #builder_name::new();
@@ -226,7 +337,7 @@ fn generate_query_builder_impl(model: &Model) -> TokenStream {
                 Ok(results.into_iter().next())
             }
 
-            pub async fn count(&self, client: &Client)
+            pub async fn count(&self, client: &PgClient)
                 -> Result<i64, Box<dyn std::error::Error>>
             {
                 let (sql, params) = self.build_count();
@@ -304,7 +415,6 @@ fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         base_type
     }
 }
-
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
