@@ -182,8 +182,12 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                     let builder = f(#where_builder::new());
                     #query_builder::from_builder(self.client.clone(), builder)
                 }
-                pub fn update(&self) -> #update_builder {
-                    #update_builder::new(self.client.clone())
+                pub fn update<F>(&self, f: F) -> #update_builder
+                where
+                    F: FnOnce(#update_builder) -> #update_builder,
+                {
+                    let builder = #update_builder::new(self.client.clone());
+                    f(builder)
                 }
                 pub fn upsert(&self) -> #upsert_builder {
                     #upsert_builder::new(self.client.clone())

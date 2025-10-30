@@ -20,7 +20,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
 
         quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.where_args.push(Box::new(value));
+                self.where_args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self.where_fragments.push((#field_col, self.where_args.len()));
                 self
             }
@@ -35,7 +35,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
 
         quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.set_args.push(Box::new(value));
+                self.set_args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self.set_fragments.push(#field_col);
                 self
             }
@@ -80,9 +80,9 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
             client: Arc<PgClient>,
             table: String,
             where_fragments: Vec<(&'static str, usize)>,
-            where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             set_fragments: Vec<&'static str>,
-            set_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            set_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             inc_ops: Vec<(&'static str, &'static str, i64)>,
         }
 
@@ -134,7 +134,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     }
                     sql.push_str(&set_clauses.join(", "));
                     let mut all_params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                        me.set_args.iter().map(|a| a.as_ref()).collect();
+                        me.set_args.iter().map(|a| a.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
                     for (_, _, val) in &me.inc_ops {
                         all_params.push(val);
                     }
@@ -147,7 +147,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                         sql.push_str(" WHERE ");
                         sql.push_str(&where_clauses.join(" AND "));
                         for arg in &me.where_args {
-                            all_params.push(arg.as_ref());
+                            all_params.push(arg.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync));
                         }
                     }
                     sql.push_str(" RETURNING *");
