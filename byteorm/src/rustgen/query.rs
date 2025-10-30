@@ -47,6 +47,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
     quote! {
         pub struct #builder_name {
+            client: Arc<PgClient>,
             table: String,
             where_fragments: Vec<(&'static str, usize)>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
@@ -60,6 +61,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         impl Clone for #builder_name {
             fn clone(&self) -> Self {
                 Self {
+                    client: self.client.clone(),
                     table: self.table.clone(),
                     where_fragments: self.where_fragments.clone(),
                     args: Vec::new(),
@@ -71,8 +73,9 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         }
 
         impl #builder_name {
-            pub fn new() -> Self {
+            pub fn new(client: Arc<PgClient>) -> Self {
                 Self {
+                    client,
                     table: #table_name.to_string(),
                     where_fragments: vec![],
                     args: vec![],
@@ -95,7 +98,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 self
             }
 
-            pub async fn select(self, client: &PgClient)
+            pub async fn select(mut self)
                 -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
                 let mut sql = format!("SELECT * FROM {}", self.table);
@@ -127,20 +130,20 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     sql.push_str(&format!(" OFFSET {}", offset));
                 }
 
-                let rows = client.query(&sql, &params[..]).await?;
+                let rows = self.client.query(&sql, &params[..]).await?;
                 Ok(rows.into_iter().map(|row| #model_name {
                     #(#field_gets),*
                 }).collect())
             }
 
-            pub async fn first(self, client: &PgClient)
+            pub async fn first(self)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                let result = self.limit(1).select(client).await?;
+                let result = self.limit(1).select().await?;
                 Ok(result.into_iter().next())
             }
 
-            pub async fn count(self, client: &PgClient)
+            pub async fn count(self)
                 -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
             {
                 let mut sql = format!("SELECT COUNT(*) FROM {}", self.table);
@@ -156,7 +159,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     sql.push_str(&where_clauses.join(" AND "));
                 }
 
-                let row = client.query_one(&sql, &params[..]).await?;
+                let row = self.client.query_one(&sql, &params[..]).await?;
                 Ok(row.get(0))
             }
         }
