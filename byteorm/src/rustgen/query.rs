@@ -6,6 +6,7 @@ use crate::rustgen::{rust_type_from_schema, to_snake_case};
 pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let builder_name = format_ident!("{}Query", model.name);
+    let where_builder_name = format_ident!("{}WhereBuilder", model.name);
     let table_name = model.name.to_lowercase();
 
     let where_methods = model.fields.iter().map(|field| {
@@ -16,8 +17,9 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
         quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.where_fragments.push((#field_col, self.args.len() + 1));
-                self.args.push(Box::new(value));
+                let param_idx = self.args.len() + 1;
+                self.where_clauses.push((#field_col.to_string(), param_idx));
+                self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self
             }
         }
@@ -40,16 +42,36 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         }
     });
 
+    let where_builder_struct = quote! {
+        pub struct #where_builder_name {
+            where_clauses: Vec<(String, usize)>,
+            order_by: Vec<(String, String)>,
+            args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
+        }
+
+        impl #where_builder_name {
+            pub fn new() -> Self {
+                Self {
+                    where_clauses: vec![],
+                    order_by: vec![],
+                    args: vec![],
+                }
+            }
+            #(#where_methods)*
+            #(#order_by_methods)*
+        }
+    };
+
     let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
         let field_name = format_ident!("{}", field.name);
         quote! { #field_name: row.get(#idx) }
     });
 
-    quote! {
+    let builder_struct = quote! {
         pub struct #builder_name {
             client: Arc<PgClient>,
             table: String,
-            where_fragments: Vec<(&'static str, usize)>,
+            where_clauses: Vec<(String, usize)>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             limit: Option<usize>,
             offset: Option<usize>,
@@ -63,7 +85,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 Self {
                     client,
                     table: #table_name.to_string(),
-                    where_fragments: vec![],
+                    where_clauses: vec![],
                     args: vec![],
                     limit: None,
                     offset: None,
@@ -71,8 +93,17 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 }
             }
 
-            #(#where_methods)*
-            #(#order_by_methods)*
+            pub fn from_builder(client: Arc<PgClient>, builder: #where_builder_name) -> Self {
+                Self {
+                    client,
+                    table: #table_name.to_string(),
+                    where_clauses: builder.where_clauses,
+                    args: builder.args,
+                    limit: None,
+                    offset: None,
+                    order_by: builder.order_by,
+                }
+            }
 
             pub fn limit(mut self, limit: usize) -> Self {
                 self.limit = Some(limit);
@@ -89,13 +120,12 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
-
-                if !self.where_fragments.is_empty() {
-                    let where_clauses: Vec<String> = self.where_fragments.iter()
-                        .map(|&(col, idx)| format!("{} = ${}", col, idx))
+                if !self.where_clauses.is_empty() {
+                    let where_parts: Vec<String> = self.where_clauses.iter()
+                        .map(|(col, idx)| format!("{} = ${}", col, idx))
                         .collect();
                     sql.push_str(" WHERE ");
-                    sql.push_str(&where_clauses.join(" AND "));
+                    sql.push_str(&where_parts.join(" AND "));
                 }
 
                 if !self.order_by.is_empty() {
@@ -140,10 +170,9 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
-
-                if !self.where_fragments.is_empty() {
-                    let where_clauses: Vec<String> = self.where_fragments.iter()
-                        .map(|&(col, idx)| format!("{} = ${}", col, idx))
+                if !self.where_clauses.is_empty() {
+                    let where_clauses: Vec<String> = self.where_clauses.iter()
+                        .map(|(col, idx)| format!("{} = ${}", col, idx))
                         .collect();
                     sql.push_str(" WHERE ");
                     sql.push_str(&where_clauses.join(" AND "));
@@ -153,5 +182,11 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 Ok(row.get(0))
             }
         }
+    };
+
+    quote! {
+        #where_builder_struct
+
+        #builder_struct
     }
 }
