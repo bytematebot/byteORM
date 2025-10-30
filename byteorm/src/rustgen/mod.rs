@@ -58,28 +58,7 @@ pub fn generate_rust_code(schema: &Schema) -> String {
                 .map(|k| map.get(*k).copied().ok_or("missing key"))
                 .collect()
         }
-
-        fn calculate_json_diff(before: &serde_json::Value, after: &serde_json::Value) -> serde_json::Value {
-            let mut diff = serde_json::Map::new();
-            if let (Some(before_obj), Some(after_obj)) = (before.as_object(), after.as_object()) {
-                for (key, after_val) in after_obj {
-                    if let Some(before_val) = before_obj.get(key) {
-                        if before_val != after_val {
-                            diff.insert(key.clone(), serde_json::json!({ "from": before_val, "to": after_val }));
-                        }
-                    } else {
-                        diff.insert(key.clone(), serde_json::json!({ "added": after_val }));
-                    }
-                }
-                for (key, before_val) in before_obj {
-                    if !after_obj.contains_key(key) {
-                        diff.insert(key.clone(), serde_json::json!({ "removed": before_val }));
-                    }
-                }
-            }
-            serde_json::Value::Object(diff)
-        }
-
+        
         #jsonb_ext
         #client_struct
         #(#structs_and_impls)*
