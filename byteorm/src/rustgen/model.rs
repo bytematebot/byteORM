@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use crate::{Model, Modifier};
-use crate::rustgen::{generate_query_builder_struct, generate_update_builder, generate_upsert_builder, rust_type_from_schema, to_snake_case};
+use crate::rustgen::{generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args, rust_type_from_schema, to_snake_case};
 
 pub fn generate_model_with_query_builder(model: &Model) -> TokenStream {
     let model_struct = generate_model_struct(model);
@@ -41,8 +41,6 @@ pub fn generate_model_struct(model: &Model) -> TokenStream {
 
 fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
-    let builder_name = format_ident!("{}Query", model_name);
-
     let pk_fields: Vec<_> = model.fields.iter()
         .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
         .collect();
@@ -60,7 +58,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
             let pk_name = to_snake_case(&pk.name);
 
             quote! {
-                pub async fn find_by_id(client: &PgClient, id: #pk_type)
+                pub async fn find_by_id(client: Arc<PgClient>, id: #pk_type)
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let sql = format!("SELECT * FROM {} WHERE {} = $1",
@@ -72,11 +70,10 @@ fn generate_model_impl(model: &Model) -> TokenStream {
                 }
             }
         } else {
-            let pk_params = pk_fields.iter().map(|pk| {
-                let param_name = format_ident!("{}", to_snake_case(&pk.name));
-                let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-                let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
-                quote! { #param_name: #pk_type }
+            let (pk_names, pk_types, _, _, pk_arg_refs) = pk_args(model);
+
+            let pk_params = pk_names.iter().zip(pk_types.iter()).map(|(name, typ)| {
+                quote! { #name: #typ }
             });
 
             let pk_conditions = pk_fields.iter().enumerate().map(|(i, pk)| {
@@ -86,18 +83,13 @@ fn generate_model_impl(model: &Model) -> TokenStream {
             });
             let where_clause = pk_conditions.collect::<Vec<_>>().join(" AND ");
 
-            let pk_args = pk_fields.iter().map(|pk| {
-                let param_name = format_ident!("{}", to_snake_case(&pk.name));
-                quote! { &#param_name }
-            });
-
             quote! {
-                pub async fn find_by_composite_pk(client: &PgClient, #(#pk_params),*)
+                pub async fn find_by_composite_pk(client: Arc<PgClient>, #(#pk_params),*)
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let sql = format!("SELECT * FROM {} WHERE {}",
                         stringify!(#model_name).to_lowercase(), #where_clause);
-                    let row_opt = client.query_opt(&sql, &[#(#pk_args),*]).await?;
+                    let row_opt = client.query_opt(&sql, &[#(#pk_arg_refs),*]).await?;
                     Ok(row_opt.map(|row| #model_name {
                         #(#field_gets),*
                     }))
@@ -110,9 +102,6 @@ fn generate_model_impl(model: &Model) -> TokenStream {
 
     quote! {
         impl #model_name {
-            pub fn query() -> #builder_name {
-                #builder_name::new()
-            }
             #find_by_id_impl
         }
     }

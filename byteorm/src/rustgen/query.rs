@@ -16,8 +16,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
         quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
+                self.where_fragments.push((#field_col, self.args.len() + 1));
                 self.args.push(Box::new(value));
-                self.where_fragments.push((#field_col, self.args.len()));
                 self
             }
         }
@@ -50,27 +50,13 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             client: Arc<PgClient>,
             table: String,
             where_fragments: Vec<(&'static str, usize)>,
-            args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             limit: Option<usize>,
             offset: Option<usize>,
             order_by: Vec<(String, String)>,
         }
 
         unsafe impl Send for #builder_name {}
-
-        impl Clone for #builder_name {
-            fn clone(&self) -> Self {
-                Self {
-                    client: self.client.clone(),
-                    table: self.table.clone(),
-                    where_fragments: self.where_fragments.clone(),
-                    args: Vec::new(),
-                    limit: self.limit,
-                    offset: self.offset,
-                    order_by: self.order_by.clone(),
-                }
-            }
-        }
 
         impl #builder_name {
             pub fn new(client: Arc<PgClient>) -> Self {
@@ -98,13 +84,11 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 self
             }
 
-            pub async fn select(mut self)
-                -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-            {
+            async fn build_query(&self) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>> {
                 let mut sql = format!("SELECT * FROM {}", self.table);
-
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    self.args.iter().map(|b| b.as_ref()).collect();
+                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
 
                 if !self.where_fragments.is_empty() {
                     let where_clauses: Vec<String> = self.where_fragments.iter()
@@ -136,10 +120,16 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 }).collect())
             }
 
+            pub async fn select(self)
+                -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+            {
+                self.build_query().await
+            }
+
             pub async fn first(self)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                let result = self.limit(1).select().await?;
+                let result = self.limit(1).build_query().await?;
                 Ok(result.into_iter().next())
             }
 
@@ -147,9 +137,9 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
             {
                 let mut sql = format!("SELECT COUNT(*) FROM {}", self.table);
-
                 let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    self.args.iter().map(|b| b.as_ref()).collect();
+                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
 
                 if !self.where_fragments.is_empty() {
                     let where_clauses: Vec<String> = self.where_fragments.iter()

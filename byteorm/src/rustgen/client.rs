@@ -1,26 +1,10 @@
 use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::rustgen::{capitalize_first, rust_type_from_schema, to_snake_case};
+use crate::rustgen::{capitalize_first, pk_args, rust_type_from_schema, to_snake_case};
 use crate::{Modifier, Schema};
 
-fn pk_args(model: &crate::Model) -> (Vec<proc_macro2::Ident>, Vec<proc_macro2::TokenStream>, Vec<String>, Vec<String>, Vec<proc_macro2::TokenStream>) {
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
-        .collect();
-    let pk_names = pk_fields.iter().map(|pk| format_ident!("{}", to_snake_case(&pk.name))).collect();
-    let pk_types = pk_fields.iter().map(|pk| {
-        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        rust_type_from_schema(&pk.type_name, is_nullable)
-    }).collect();
-    let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
-    let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
-    let pk_arg_refs = pk_fields.iter().map(|pk| {
-        let name = format_ident!("{}", to_snake_case(&pk.name));
-        quote! { &#name }
-    }).collect();
-    (pk_names, pk_types, pk_cols, pk_placeholders, pk_arg_refs)
-}
+
 
 fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -> TokenStream {
     let pk_fields: Vec<_> = model.fields.iter()
@@ -37,7 +21,7 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -
             pub async fn find_unique(&self, id: #pk_type)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                #model_name::find_by_id(&self.client, id).await
+                #model_name::find_by_id(self.client.clone(), id).await
             }
         }
     } else {
@@ -57,7 +41,7 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -
             pub async fn find_unique(&self, #(#pk_params),*)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                #model_name::find_by_composite_pk(&self.client, #(#pk_args),*).await
+                #model_name::find_by_composite_pk(self.client.clone(), #(#pk_args),*).await
             }
         }
     }
@@ -80,41 +64,39 @@ fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
                 self.client.execute(
-                    &format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT DO NOTHING", #table_name, #pk_col),
+                    &format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING", #table_name, #pk_col, #pk_col),
                     &[&id]
                 ).await?;
                 self.find_unique(id).await?.ok_or("Record should exist after find_or_create".into())
             }
         }
     } else {
+        let (_, _, pk_cols, pk_placeholders, pk_arg_refs) = pk_args(model);
+
+        let pk_cols_str = pk_cols.join(", ");
+        let pk_placeholders_str = pk_placeholders.join(", ");
+
         let pk_params = pk_fields.iter().map(|pk| {
             let name = format_ident!("{}", to_snake_case(&pk.name));
             let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
             let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
             quote! { #name: #pk_type }
         });
-        let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
-        let pk_cols_str = pk_cols.join(", ");
-        let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
-        let pk_placeholders_str = pk_placeholders.join(", ");
-        let pk_conflict = pk_cols.join(", ");
-        let pk_args = pk_fields.iter().map(|pk| {
-            let name = format_ident!("{}", to_snake_case(&pk.name));
-            quote! { &#name }
-        });
+
         let pk_args_call = pk_fields.iter().map(|pk| {
             let name = format_ident!("{}", to_snake_case(&pk.name));
             quote! { #name }
         });
+
         quote! {
             pub async fn find_or_create(&self, #(#pk_params),*)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
                 let sql = format!(
                     "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
-                    #table_name, #pk_cols_str, #pk_placeholders_str, #pk_conflict
+                    #table_name, #pk_cols_str, #pk_placeholders_str, #pk_cols_str
                 );
-                self.client.execute(&sql, &[#(#pk_args),*]).await?;
+                self.client.execute(&sql, &[#(#pk_arg_refs),*]).await?;
                 self.find_unique(#(#pk_args_call),*).await?.ok_or("Record should exist after find_or_create".into())
             }
         }
@@ -202,8 +184,7 @@ fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(
             quote! { #(#args),* }
         };
 
-        let pk_columns: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
-        let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
+        let (_, _, pk_columns, pk_placeholders, _) = pk_args(model);
         let insert_pk_part = pk_columns.join(", ");
         let insert_values_part = pk_placeholders.join(", ");
         let conflict_clause = pk_columns.join(", ");
@@ -232,9 +213,9 @@ fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(
                 pub async fn get(&self, #pk_params, key: &str)
                     -> Result<String, Box<dyn std::error::Error + Send + Sync>>
                 {
-                    match #query_builder::new()
+                    match #query_builder::new(self.client.clone())
                         #pk_where_methods
-                        .first(&self.client)
+                        .first()
                         .await
                     {
                         Ok(Some(record)) => {
@@ -251,9 +232,9 @@ fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(
                 where
                     T: serde::de::DeserializeOwned,
                 {
-                    match #query_builder::new()
+                    match #query_builder::new(self.client.clone())
                         #pk_where_methods
-                        .first(&self.client)
+                        .first()
                         .await
                     {
                         Ok(Some(record)) => {
@@ -279,9 +260,9 @@ fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(
                 pub async fn has(&self, #pk_params, key: &str)
                     -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
                 {
-                    match #query_builder::new()
+                    match #query_builder::new(self.client.clone())
                         #pk_where_methods
-                        .first(&self.client)
+                        .first()
                         .await
                     {
                         Ok(Some(record)) => Ok(record.#jsonb_field_ident.has_key(key) || #defaults_const.has_key(key)),
@@ -324,9 +305,9 @@ fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(
                     &self, #pk_params, keys: &[&str]
                 ) -> Result<HashMap<String, serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>
                 {
-                    let opt = #query_builder::new()
+                    let opt = #query_builder::new(self.client.clone())
                         #pk_where_methods
-                        .first(&self.client).await?;
+                        .first().await?;
 
                     let mut out = HashMap::new();
 
@@ -432,17 +413,20 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                         #(#jsonb_accessor_inits),*
                     }
                 }
-                pub fn find_many(&self) -> #query_builder { #query_builder::new() }
-                pub fn update(&self) -> #update_builder { #update_builder::new(self.client.clone()) }
-                pub fn upsert(&self) -> #upsert_builder { #upsert_builder::new(self.client.clone()) }
+                pub fn find_many(&self) -> #query_builder {
+                    #query_builder::new(self.client.clone())
+                }
+                pub fn find_first(&self) -> #query_builder {
+                    #query_builder::new(self.client.clone())
+                }
+                pub fn update(&self) -> #update_builder {
+                    #update_builder::new(self.client.clone())
+                }
+                pub fn upsert(&self) -> #upsert_builder {
+                    #upsert_builder::new(self.client.clone())
+                }
                 #find_unique
                 #find_or_create
-                pub async fn find_first(&self) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>> {
-                    #query_builder::new().first(&self.client).await
-                }
-                pub async fn count(&self) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
-                    #query_builder::new().count(&self.client).await
-                }
                 pub fn client(&self) -> &PgClient { &self.client }
             }
         }
