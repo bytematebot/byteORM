@@ -9,6 +9,7 @@ pub struct Schema {
 pub struct Model {
     pub name: String,
     pub fields: Vec<Field>,
+    pub computed_fields: Vec<ComputedField>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,4 +107,11 @@ pub enum Modifier {
 pub struct Attribute {
     pub name: String,
     pub args: Option<String>,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputedField {
+    pub name: String,
+    pub expression: String,
 }
