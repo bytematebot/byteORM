@@ -145,6 +145,9 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
 
         let jsonb_sub_accessors = generate_jsonb_sub_accessors(model, jsonb_defaults);
         let where_builder = format_ident!("{}WhereBuilder", model.name);
+
+        let computed_methods = std::iter::empty::<TokenStream>();
+
         quote! {
             #(#jsonb_sub_accessors)*
 
