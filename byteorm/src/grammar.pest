@@ -19,6 +19,14 @@ arg_char     = {
 nl           = _{ NEWLINE+ }
 
 schema       = { SOI ~ nl? ~ model_decl* ~ nl? ~ EOI }
-model_decl   = { "model" ~ ident ~ "{" ~ nl? ~ field_decl+ ~ nl? ~ "}" ~ nl? }
 field_decl   = { ident ~ type_name ~ field_mods* ~ nl }
 field_mods   = _{ modifier | attr }
+string       = @{ "\"" ~ ( "\\\"" | (!"\"" ~ ANY) )* ~ "\"" }
+
+computed_attr = { "@" ~ "computed" ~ WHITESPACE? ~ ident ~ WHITESPACE? ~ "=" ~ WHITESPACE? ~ string }
+
+computed_decl = { computed_attr }
+
+model_member = { field_decl | computed_decl }
+
+model_decl   = { "model" ~ ident ~ "{" ~ nl? ~ model_member+ ~ nl? ~ "}" ~ nl? }
