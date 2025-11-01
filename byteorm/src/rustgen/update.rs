@@ -1,79 +1,20 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use crate::{Model, Modifier};
-use crate::rustgen::{rust_type_from_schema, to_snake_case};
-
-fn is_numeric_type(ty: &str) -> bool {
-    matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
-}
+use crate::rustgen::{generate_field_gets, generate_inc_methods, generate_set_methods, generate_where_methods, is_numeric_type, rust_type_from_schema, to_snake_case};
 
 pub fn generate_update_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let update_builder_name = format_ident!("{}Update", model.name);
     let table_name = model.name.to_lowercase();
 
-    let where_methods = model.fields.iter().map(|field| {
-        let method_name = format_ident!("where_{}", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-        let field_col = to_snake_case(&field.name);
+    let where_methods = generate_where_methods(model, "where_args", "where_fragments");
 
-        quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.where_args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.where_fragments.push((#field_col, self.where_args.len()));
-                self
-            }
-        }
-    });
+    let set_methods = generate_set_methods(model, false, "", Some("set_args"), Some("set_fragments"));
 
-    let set_methods = model.fields.iter().map(|field| {
-        let method_name = format_ident!("set_{}", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-        let field_col = to_snake_case(&field.name);
+    let inc_methods = generate_inc_methods(model, "inc_ops", None);
 
-        quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.set_args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.set_fragments.push(#field_col);
-                self
-            }
-        }
-    });
-
-    let inc_methods = model.fields.iter()
-        .filter(|f| is_numeric_type(&f.type_name))
-        .map(|field| {
-            let field_col = to_snake_case(&field.name);
-            let inc_method = format_ident!("inc_{}", field_col);
-            let dec_method = format_ident!("dec_{}", field_col);
-            let mul_method = format_ident!("mul_{}", field_col);
-            let div_method = format_ident!("div_{}", field_col);
-            quote! {
-                pub fn #inc_method(mut self, amount: i64) -> Self {
-                    self.inc_ops.push((#field_col, "inc", amount));
-                    self
-                }
-                pub fn #dec_method(mut self, amount: i64) -> Self {
-                    self.inc_ops.push((#field_col, "dec", amount));
-                    self
-                }
-                pub fn #mul_method(mut self, factor: i64) -> Self {
-                    self.inc_ops.push((#field_col, "mul", factor));
-                    self
-                }
-                pub fn #div_method(mut self, divisor: i64) -> Self {
-                    self.inc_ops.push((#field_col, "div", divisor));
-                    self
-                }
-            }
-        });
-
-    let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
-        let field_name = format_ident!("{}", field.name);
-        quote! { #field_name: row.get(#idx) }
-    });
+    let field_gets = generate_field_gets(model);
 
     quote! {
         pub struct #update_builder_name {

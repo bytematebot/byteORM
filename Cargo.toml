@@ -2,6 +2,9 @@
 members = [
     "byteorm",
 ]
+exclude = [
+    "examples/generated",
+]
 resolver = "3"
 
 [workspace.package]

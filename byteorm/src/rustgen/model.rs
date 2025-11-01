@@ -1,13 +1,15 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use crate::{Model, Modifier};
-use crate::rustgen::{generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args, rust_type_from_schema, to_snake_case};
+use crate::rustgen::{generate_create_builder, generate_delete_builder, generate_field_gets, generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args, rust_type_from_schema, to_snake_case};
 
 pub fn generate_model_with_query_builder(model: &Model) -> TokenStream {
     let model_struct = generate_model_struct(model);
     let query_builder_struct = generate_query_builder_struct(model);
     let update_builder = generate_update_builder(model);
     let upsert_builder = generate_upsert_builder(model);
+    let create_builder = generate_create_builder(model);
+    let delete_builder = generate_delete_builder(model);
     let model_impl = generate_model_impl(model);
 
     quote! {
@@ -15,6 +17,8 @@ pub fn generate_model_with_query_builder(model: &Model) -> TokenStream {
         #query_builder_struct
         #update_builder
         #upsert_builder
+        #create_builder
+        #delete_builder
         #model_impl
     }
 }
@@ -45,10 +49,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
         .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
         .collect();
 
-    let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
-        let field_name = format_ident!("{}", field.name);
-        quote! { #field_name: row.get(#idx) }
-    });
+    let field_gets = generate_field_gets(model);
 
     let find_by_id_impl = if !pk_fields.is_empty() {
         if pk_fields.len() == 1 {

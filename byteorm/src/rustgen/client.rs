@@ -114,6 +114,8 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
         let query_builder = format_ident!("{}Query", model.name);
         let update_builder = format_ident!("{}Update", model.name);
         let upsert_builder = format_ident!("{}Upsert", model.name);
+        let create_builder = format_ident!("{}Create", model.name);
+        let delete_builder = format_ident!("{}Delete", model.name);
         let table_name = model.name.to_lowercase();
 
         let find_unique = generate_find_unique(&model_name, model);
@@ -198,6 +200,20 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                     F: FnOnce(#upsert_builder) -> #upsert_builder,
                 {
                     let builder = #upsert_builder::new(self.client.clone());
+                    f(builder)
+                }
+                pub fn create<F>(&self, f: F) -> #create_builder
+                where
+                    F: FnOnce(#create_builder) -> #create_builder,
+                {
+                    let builder = #create_builder::new(self.client.clone());
+                    f(builder)
+                }
+                pub fn delete<F>(&self, f: F) -> #delete_builder
+                where
+                    F: FnOnce(#delete_builder) -> #delete_builder,
+                {
+                    let builder = #delete_builder::new(self.client.clone());
                     f(builder)
                 }
                 #find_unique

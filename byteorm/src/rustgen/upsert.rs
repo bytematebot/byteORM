@@ -1,11 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use crate::{Model, Modifier};
-use crate::rustgen::{rust_type_from_schema, to_snake_case};
-
-fn is_numeric_type(ty: &str) -> bool {
-    matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
-}
+use crate::rustgen::{generate_field_gets, generate_inc_methods, generate_set_methods, is_numeric_type, rust_type_from_schema, to_snake_case};
 
 pub fn generate_upsert_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
@@ -44,57 +40,11 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
         }
     });
 
-    let set_methods = all_fields.iter().map(|field| {
-        let method_name = format_ident!("set_{}", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-        let field_col = to_snake_case(&field.name);
+    let set_methods = generate_set_methods(model, true, "set_values", None, None);
 
-        quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.set_values.insert(#field_col, Box::new(value));
-                self
-            }
-        }
-    });
+    let inc_methods = generate_inc_methods(model, "inc_ops", Some("set_values"));
 
-    let inc_methods = model.fields.iter()
-        .filter(|f| is_numeric_type(&f.type_name))
-        .map(|field| {
-            let field_col = to_snake_case(&field.name);
-            let inc_method = format_ident!("inc_{}", field_col);
-            let dec_method = format_ident!("dec_{}", field_col);
-            let mul_method = format_ident!("mul_{}", field_col);
-            let div_method = format_ident!("div_{}", field_col);
-
-            quote! {
-                pub fn #inc_method(mut self, amount: i64) -> Self {
-                    self.inc_ops.insert(#field_col, ("inc", amount));
-                    self.set_values.insert(#field_col, Box::new(amount));
-                    self
-                }
-                pub fn #dec_method(mut self, amount: i64) -> Self {
-                    self.inc_ops.insert(#field_col, ("dec", amount));
-                    self.set_values.insert(#field_col, Box::new(-amount));
-                    self
-                }
-                pub fn #mul_method(mut self, factor: i64) -> Self {
-                    self.inc_ops.insert(#field_col, ("mul", factor));
-                    self.set_values.insert(#field_col, Box::new(0));
-                    self
-                }
-                pub fn #div_method(mut self, divisor: i64) -> Self {
-                    self.inc_ops.insert(#field_col, ("div", divisor));
-                    self.set_values.insert(#field_col, Box::new(0));
-                    self
-                }
-            }
-        });
-
-    let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
-        let field_name = format_ident!("{}", field.name);
-        quote! { #field_name: row.get(#idx) }
-    });
+    let field_gets = generate_field_gets(model);
 
     let pk_col_names: Vec<String> = pk_fields.iter()
         .map(|f| to_snake_case(&f.name))

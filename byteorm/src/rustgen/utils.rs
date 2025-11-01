@@ -317,3 +317,140 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
     }).collect()
 }
 
+pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> {
+    model.fields.iter().enumerate().map(|(idx, field)| {
+        let field_name = format_ident!("{}", field.name);
+        quote! { #field_name: row.get(#idx) }
+    })
+}
+
+pub fn is_numeric_type(ty: &str) -> bool {
+    matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
+}
+
+pub fn generate_inc_methods(model: &crate::Model, target_ops: &str, target_values: Option<&str>) -> impl Iterator<Item = TokenStream> {
+    model.fields.iter()
+        .filter(|f| is_numeric_type(&f.type_name))
+        .map(move |field| {
+            let field_col = to_snake_case(&field.name);
+            let inc_method = format_ident!("inc_{}", field_col);
+            let dec_method = format_ident!("dec_{}", field_col);
+            let mul_method = format_ident!("mul_{}", field_col);
+            let div_method = format_ident!("div_{}", field_col);
+            let ops_ident = format_ident!("{}", target_ops);
+            let values_ident = target_values.map(|v| format_ident!("{}", v));
+
+            let inc_body = if let Some(values) = &values_ident {
+                quote! {
+                    self.#ops_ident.insert(#field_col, ("inc", amount));
+                    self.#values.insert(#field_col, Box::new(amount));
+                }
+            } else {
+                quote! {
+                    self.#ops_ident.push((#field_col, "inc", amount));
+                }
+            };
+
+            let dec_body = if let Some(values) = &values_ident {
+                quote! {
+                    self.#ops_ident.insert(#field_col, ("dec", amount));
+                    self.#values.insert(#field_col, Box::new(-amount));
+                }
+            } else {
+                quote! {
+                    self.#ops_ident.push((#field_col, "dec", amount));
+                }
+            };
+
+            let mul_body = if let Some(values) = &values_ident {
+                quote! {
+                    self.#ops_ident.insert(#field_col, ("mul", factor));
+                    self.#values.insert(#field_col, Box::new(0));
+                }
+            } else {
+                quote! {
+                    self.#ops_ident.push((#field_col, "mul", factor));
+                }
+            };
+
+            let div_body = if let Some(values) = &values_ident {
+                quote! {
+                    self.#ops_ident.insert(#field_col, ("div", divisor));
+                    self.#values.insert(#field_col, Box::new(0));
+                }
+            } else {
+                quote! {
+                    self.#ops_ident.push((#field_col, "div", divisor));
+                }
+            };
+
+            quote! {
+                pub fn #inc_method(mut self, amount: i64) -> Self {
+                    #inc_body
+                    self
+                }
+                pub fn #dec_method(mut self, amount: i64) -> Self {
+                    #dec_body
+                    self
+                }
+                pub fn #mul_method(mut self, factor: i64) -> Self {
+                    #mul_body
+                    self
+                }
+                pub fn #div_method(mut self, divisor: i64) -> Self {
+                    #div_body
+                    self
+                }
+            }
+        })
+}
+
+pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fragments: &str) -> impl Iterator<Item = TokenStream> {
+    model.fields.iter().map(move |field| {
+        let method_name = format_ident!("where_{}", to_snake_case(&field.name));
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+        let field_col = to_snake_case(&field.name);
+        let args_ident = format_ident!("{}", target_args);
+        let fragments_ident = format_ident!("{}", target_fragments);
+
+        quote! {
+            pub fn #method_name(mut self, value: #field_type) -> Self {
+                self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self.#fragments_ident.push((#field_col, self.#args_ident.len()));
+                self
+            }
+        }
+    })
+}
+
+pub fn generate_set_methods(model: &crate::Model, use_hashmap: bool, hashmap_field: &str, vec_field: Option<&str>, fragments_field: Option<&str>) -> impl Iterator<Item = TokenStream> {
+    model.fields.iter().map(move |field| {
+        let method_name = format_ident!("set_{}", to_snake_case(&field.name));
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+        let field_col = to_snake_case(&field.name);
+
+        let body = if use_hashmap {
+            let hashmap_ident = format_ident!("{}", hashmap_field);
+            quote! {
+                self.#hashmap_ident.insert(#field_col, Box::new(value));
+            }
+        } else {
+            let vec_ident = format_ident!("{}", vec_field.unwrap());
+            let fragments_ident = format_ident!("{}", fragments_field.unwrap());
+            quote! {
+                self.#vec_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self.#fragments_ident.push(#field_col);
+            }
+        };
+
+        quote! {
+            pub fn #method_name(mut self, value: #field_type) -> Self {
+                #body
+                self
+            }
+        }
+    })
+}
+

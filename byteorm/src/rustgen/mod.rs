@@ -4,6 +4,8 @@ use quote::quote;
 use crate::Schema;
 
 pub mod client;
+pub mod create;
+pub mod delete;
 pub mod jsonb;
 pub mod model;
 pub mod query;
@@ -12,6 +14,8 @@ pub mod upsert;
 pub mod utils;
 
 pub use client::*;
+pub use create::*;
+pub use delete::*;
 pub use jsonb::*;
 pub use model::*;
 pub use query::*;

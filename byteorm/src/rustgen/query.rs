@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use crate::{Model, Modifier};
-use crate::rustgen::{rust_type_from_schema, to_snake_case};
+use crate::rustgen::{generate_field_gets, rust_type_from_schema, to_snake_case};
 
 pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
@@ -133,10 +133,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         }
     };
 
-    let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
-        let field_name = format_ident!("{}", field.name);
-        quote! { #field_name: row.get(#idx) }
-    });
+    let field_gets = generate_field_gets(model);
 
     let builder_struct = quote! {
         pub struct #builder_name {
