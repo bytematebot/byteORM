@@ -27,12 +27,49 @@ fn parse_model(pair: Pair<Rule>) -> Model {
     let mut pairs = pair.into_inner();
     let name = pairs.next().unwrap().as_str().to_string();
     let mut fields = Vec::new();
+    let mut computed_fields = Vec::new();
     for pair in pairs {
-        if matches!(pair.as_rule(), Rule::field_decl) {
-            fields.push(parse_field(pair));
+        match pair.as_rule() {
+            Rule::field_decl => fields.push(parse_field(pair)),
+            Rule::computed_decl => computed_fields.push(parse_computed(pair)),
+            Rule::model_member => {
+                for inner in pair.into_inner() {
+                    match inner.as_rule() {
+                        Rule::field_decl => fields.push(parse_field(inner)),
+                        Rule::computed_decl => computed_fields.push(parse_computed(inner)),
+                        _ => (),
+                    }
+                }
+            }
+            _ => (),
         }
     }
-    Model { name, fields }
+    Model { name, fields, computed_fields }
+}
+
+fn parse_computed(pair: Pair<Rule>) -> ComputedField {
+    // computed_decl -> computed_attr -> ident string
+    let mut name = String::new();
+    let mut expression = String::new();
+
+    for inner in pair.into_inner() {
+        for p in inner.into_inner() {
+            match p.as_rule() {
+                Rule::ident => name = p.as_str().to_string(),
+                Rule::string => {
+                    let s = p.as_str();
+                    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+                        expression = s[1..s.len()-1].to_string();
+                    } else {
+                        expression = s.to_string();
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+
+    ComputedField { name, expression }
 }
 
 fn parse_field(pair: Pair<Rule>) -> Field {
