@@ -18,7 +18,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 let param_idx = self.args.len() + 1;
-                self.where_clauses.push((#field_col.to_string(), param_idx));
+                self.where_clauses.push(format!("{} = ${}", #field_col, param_idx));
                 self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self
             }
@@ -42,11 +42,68 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         }
     });
 
+    let computed_where_methods = model.computed_fields.iter().map(|cf| {
+        let snake = to_snake_case(&cf.name);
+        let method_gt = format_ident!("where_{}_gt", snake);
+        let method_lt = format_ident!("where_{}_lt", snake);
+        let method_eq = format_ident!("where_{}_eq", snake);
+        let expr = cf.expression.clone();
+
+        quote! {
+            pub fn #method_gt<V>(mut self, value: V) -> Self
+            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+            {
+                let param_idx = self.args.len() + 1;
+                self.where_clauses.push(format!("({}) > ${}", #expr, param_idx));
+                self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self
+            }
+
+            pub fn #method_lt<V>(mut self, value: V) -> Self
+            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+            {
+                let param_idx = self.args.len() + 1;
+                self.where_clauses.push(format!("({}) < ${}", #expr, param_idx));
+                self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self
+            }
+
+            pub fn #method_eq<V>(mut self, value: V) -> Self
+            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+            {
+                let param_idx = self.args.len() + 1;
+                self.where_clauses.push(format!("({}) = ${}", #expr, param_idx));
+                self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self
+            }
+        }
+    });
+
+    let computed_order_by_methods = model.computed_fields.iter().map(|cf| {
+        let snake = to_snake_case(&cf.name);
+        let asc_method = format_ident!("order_by_{}_asc", snake);
+        let desc_method = format_ident!("order_by_{}_desc", snake);
+        let expr = cf.expression.clone();
+
+        quote! {
+            pub fn #asc_method(mut self) -> Self {
+                self.order_by.push((format!("({})", #expr), "ASC".to_string()));
+                self
+            }
+            pub fn #desc_method(mut self) -> Self {
+                self.order_by.push((format!("({})", #expr), "DESC".to_string()));
+                self
+            }
+        }
+    });
+
     let where_builder_struct = quote! {
         pub struct #where_builder_name {
-            where_clauses: Vec<(String, usize)>,
+            where_clauses: Vec<String>,
             order_by: Vec<(String, String)>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
+            limit: Option<usize>,
+            offset: Option<usize>,
         }
 
         impl #where_builder_name {
@@ -55,10 +112,24 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     where_clauses: vec![],
                     order_by: vec![],
                     args: vec![],
+                    limit: None,
+                    offset: None,
                 }
             }
             #(#where_methods)*
+            #(#computed_where_methods)*
             #(#order_by_methods)*
+            #(#computed_order_by_methods)*
+
+            pub fn limit(mut self, limit: usize) -> Self {
+                self.limit = Some(limit);
+                self
+            }
+
+            pub fn offset(mut self, offset: usize) -> Self {
+                self.offset = Some(offset);
+                self
+            }
         }
     };
 
@@ -71,7 +142,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         pub struct #builder_name {
             client: Arc<PgClient>,
             table: String,
-            where_clauses: Vec<(String, usize)>,
+            where_clauses: Vec<String>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             limit: Option<usize>,
             offset: Option<usize>,
@@ -99,8 +170,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     table: #table_name.to_string(),
                     where_clauses: builder.where_clauses,
                     args: builder.args,
-                    limit: None,
-                    offset: None,
+                    limit: builder.limit,
+                    offset: builder.offset,
                     order_by: builder.order_by,
                 }
             }
@@ -121,9 +192,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_parts: Vec<String> = self.where_clauses.iter()
-                        .map(|(col, idx)| format!("{} = ${}", col, idx))
-                        .collect();
+                    let where_parts: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
                     sql.push_str(&where_parts.join(" AND "));
                 }
@@ -165,9 +234,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_clauses: Vec<String> = self.where_clauses.iter()
-                        .map(|(col, idx)| format!("{} = ${}", col, idx))
-                        .collect();
+                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
                     sql.push_str(&where_clauses.join(" AND "));
                 }
