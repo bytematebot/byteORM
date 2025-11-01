@@ -82,14 +82,20 @@ async fn main() {
             println!("\nGenerated SQL:\n{}", sql);
 
             println!("\n⚙️  Executing SQL...");
-            if let Err(e) = db::execute_sql(&client, &sql).await {
-                eprintln!("Error executing SQL: {}", e);
-                return;
-            }
+            let executed = match db::execute_sql(&client, &sql).await {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!("Error executing SQL: {}", e);
+                    eprintln!("Continuing to generate client from schema only.");
+                    false
+                }
+            };
 
-            if let Err(e) = snapshot::save_snapshot(&client, &schema).await {
-                eprintln!("Error saving snapshot: {}", e);
-                return;
+            if executed {
+                if let Err(e) = snapshot::save_snapshot(&client, &schema).await {
+                    eprintln!("Error saving snapshot: {}", e);
+                    return;
+                }
             }
 
             println!("\n🔧 Generating byteorm-client crate...");
