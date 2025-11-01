@@ -4,8 +4,6 @@ use quote::{format_ident, quote};
 use crate::rustgen::{capitalize_first, generate_jsonb_sub_accessors, pk_args, rust_type_from_schema, to_snake_case};
 use crate::{Modifier, Schema};
 
-
-
 fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -> TokenStream {
     let pk_fields: Vec<_> = model.fields.iter()
         .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
@@ -103,7 +101,6 @@ fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model
     }
 }
 
-
 pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, String), String>) -> TokenStream {
     let model_accessors = schema.models.iter().map(|model| {
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));
@@ -189,8 +186,12 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                     let builder = #update_builder::new(self.client.clone());
                     f(builder)
                 }
-                pub fn upsert(&self) -> #upsert_builder {
-                    #upsert_builder::new(self.client.clone())
+                pub fn upsert<F>(&self, f: F) -> #upsert_builder
+                where
+                    F: FnOnce(#upsert_builder) -> #upsert_builder,
+                {
+                    let builder = #upsert_builder::new(self.client.clone());
+                    f(builder)
                 }
                 #find_unique
                 #find_or_create
