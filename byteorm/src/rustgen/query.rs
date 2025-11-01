@@ -150,12 +150,6 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 }).collect())
             }
 
-            pub async fn select(self)
-                -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-            {
-                self.build_query().await
-            }
-
             pub async fn first(self)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
@@ -180,6 +174,16 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
                 let row = self.client.query_one(&sql, &params[..]).await?;
                 Ok(row.get(0))
+            }
+        }
+
+        impl Future for #builder_name {
+            type Output = Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let future = self.build_query();
+                let mut pinned_future = Box::pin(future);
+                pinned_future.as_mut().poll(cx)
             }
         }
     };

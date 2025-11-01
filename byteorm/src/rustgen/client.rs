@@ -169,8 +169,12 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                         #(#jsonb_accessor_inits),*
                     }
                 }
-                pub fn find_many(&self) -> #query_builder {
-                    #query_builder::new(self.client.clone())
+                pub async fn find_many<F>(&self, f: F) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.client.clone(), builder).await
                 }
                 pub async fn find_first<F>(&self, f: F) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 where

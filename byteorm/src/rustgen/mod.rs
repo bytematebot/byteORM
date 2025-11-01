@@ -50,6 +50,9 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         use std::sync::Arc;
         use once_cell::sync::Lazy;
         use std::collections::HashMap;
+        use futures_util::task::Context;
+        use std::pin::Pin;
+        use futures_util::task::Poll;
         pub fn expect_keys<T: Copy>(
             map: &std::collections::HashMap<String, T>,
             keys: &[&str]
