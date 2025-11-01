@@ -3,6 +3,10 @@ use quote::{format_ident, quote};
 use crate::{Model, Modifier};
 use crate::rustgen::{rust_type_from_schema, to_snake_case};
 
+fn is_numeric_type(ty: &str) -> bool {
+    matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
+}
+
 pub fn generate_upsert_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let upsert_builder_name = format_ident!("{}Upsert", model.name);
@@ -54,6 +58,39 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
         }
     });
 
+    let inc_methods = model.fields.iter()
+        .filter(|f| is_numeric_type(&f.type_name))
+        .map(|field| {
+            let field_col = to_snake_case(&field.name);
+            let inc_method = format_ident!("inc_{}", field_col);
+            let dec_method = format_ident!("dec_{}", field_col);
+            let mul_method = format_ident!("mul_{}", field_col);
+            let div_method = format_ident!("div_{}", field_col);
+
+            quote! {
+                pub fn #inc_method(mut self, amount: i64) -> Self {
+                    self.inc_ops.insert(#field_col, ("inc", amount));
+                    self.set_values.insert(#field_col, Box::new(amount));
+                    self
+                }
+                pub fn #dec_method(mut self, amount: i64) -> Self {
+                    self.inc_ops.insert(#field_col, ("dec", amount));
+                    self.set_values.insert(#field_col, Box::new(-amount));
+                    self
+                }
+                pub fn #mul_method(mut self, factor: i64) -> Self {
+                    self.inc_ops.insert(#field_col, ("mul", factor));
+                    self.set_values.insert(#field_col, Box::new(0));
+                    self
+                }
+                pub fn #div_method(mut self, divisor: i64) -> Self {
+                    self.inc_ops.insert(#field_col, ("div", divisor));
+                    self.set_values.insert(#field_col, Box::new(0));
+                    self
+                }
+            }
+        });
+
     let field_gets = model.fields.iter().enumerate().map(|(idx, field)| {
         let field_name = format_ident!("{}", field.name);
         quote! { #field_name: row.get(#idx) }
@@ -70,6 +107,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
             table: String,
             pk_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync>>,
             set_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync>>,
+            inc_ops: std::collections::HashMap<&'static str, (&'static str, i64)>,
             polled: bool,
         }
 
@@ -82,12 +120,14 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                     table: #table_name.to_string(),
                     pk_values: std::collections::HashMap::new(),
                     set_values: std::collections::HashMap::new(),
+                    inc_ops: std::collections::HashMap::new(),
                     polled: false,
                 }
             }
 
             #(#where_methods)*
             #(#set_methods)*
+            #(#inc_methods)*
         }
 
         impl std::future::Future for #upsert_builder_name {
@@ -102,6 +142,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                 let table = self.table.clone();
                 let pk_values = std::mem::take(&mut self.pk_values);
                 let set_values = std::mem::take(&mut self.set_values);
+                let inc_ops = std::mem::take(&mut self.inc_ops);
 
                 let pk_columns = vec![#(#pk_col_names),*];
                 let conflict_clause = #conflict_clause.to_string();
@@ -112,13 +153,16 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                             return Err(format!("Missing primary key field: {}", pk_col).into());
                         }
                     }
+
                     let mut all_values = pk_values;
                     for (k, v) in set_values {
                         all_values.insert(k, v);
                     }
+
                     if all_values.is_empty() {
                         return Err("No fields to upsert".into());
                     }
+
                     let mut columns: Vec<&str> = all_values.keys().copied().collect();
                     columns.sort();
 
@@ -138,15 +182,28 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                         .copied()
                         .collect();
 
-                    let sql = if update_columns.is_empty() {
+                    let sql = if update_columns.is_empty() && inc_ops.is_empty() {
                         format!(
                             "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
                             table, columns_str, placeholders_str, conflict_clause
                         )
                     } else {
-                        let update_clauses: Vec<String> = update_columns.iter()
-                            .map(|col| format!("{} = EXCLUDED.{}", col, col))
-                            .collect();
+                        let mut update_clauses: Vec<String> = vec![];
+
+                        for col in update_columns {
+                            if let Some((op, value)) = inc_ops.get(col) {
+                                let clause = match *op {
+                                    "inc" => format!("{} = COALESCE({}.{}, 0) + {}", col, table, col, value),
+                                    "dec" => format!("{} = COALESCE({}.{}, 0) - {}", col, table, col, value.abs()),
+                                    "mul" => format!("{} = COALESCE({}.{}, 0) * {}", col, table, col, value),
+                                    "div" => format!("{} = COALESCE({}.{}, 0) / {}", col, table, col, value),
+                                    _ => format!("{} = EXCLUDED.{}", col, col),
+                                };
+                                update_clauses.push(clause);
+                            } else {
+                                update_clauses.push(format!("{} = EXCLUDED.{}", col, col));
+                            }
+                        }
 
                         format!(
                             "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING *",
