@@ -406,7 +406,7 @@ pub fn generate_inc_methods(model: &crate::Model, target_ops: &str, target_value
 }
 
 pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fragments: &str) -> impl Iterator<Item = TokenStream> {
-    model.fields.iter().map(move |field| {
+    model.fields.iter().flat_map(move |field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
@@ -414,13 +414,77 @@ pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fr
         let args_ident = format_ident!("{}", target_args);
         let fragments_ident = format_ident!("{}", target_fragments);
 
-        quote! {
+        let base_method = quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push((#field_col, self.#args_ident.len()));
+                self.#fragments_ident.push((#field_col.to_string(), self.#args_ident.len()));
                 self
             }
+        };
+
+        let null_methods = if is_nullable {
+            let method_is_null = format_ident!("where_{}_is_null", to_snake_case(&field.name));
+            let method_is_not_null = format_ident!("where_{}_is_not_null", to_snake_case(&field.name));
+            vec![
+                quote! {
+                    pub fn #method_is_null(mut self) -> Self {
+                        self.#fragments_ident.push((format!("{} IS NULL", #field_col), 0));
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_is_not_null(mut self) -> Self {
+                        self.#fragments_ident.push((format!("{} IS NOT NULL", #field_col), 0));
+                        self
+                    }
+                }
+            ]
+        } else {
+            vec![]
+        };
+
+        let mut methods = vec![base_method];
+        methods.extend(null_methods);
+
+        if field.type_name == "TimestamptZ" {
+            let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
+            let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
+            let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
+            let method_lte = format_ident!("where_{}_lte", to_snake_case(&field.name));
+
+            methods.extend(vec![
+                quote! {
+                    pub fn #method_gt(mut self, value: #field_type) -> Self {
+                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self.#fragments_ident.push((format!("{} >", #field_col), self.#args_ident.len()));
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_lt(mut self, value: #field_type) -> Self {
+                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Send + Sync>);
+                        self.#fragments_ident.push((format!("{} <", #field_col), self.#args_ident.len()));
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_gte(mut self, value: #field_type) -> Self {
+                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self.#fragments_ident.push((format!("{} >=", #field_col), self.#args_ident.len()));
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_lte(mut self, value: #field_type) -> Self {
+                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self.#fragments_ident.push((format!("{} <=", #field_col), self.#args_ident.len()));
+                        self
+                    }
+                }
+            ]);
         }
+
+        methods.into_iter()
     })
 }
 
