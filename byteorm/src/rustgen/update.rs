@@ -20,7 +20,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
         pub struct #update_builder_name {
             client: Arc<PgClient>,
             table: String,
-            where_fragments: Vec<(&'static str, usize)>,
+            where_fragments: Vec<(String, usize)>,
             where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             set_fragments: Vec<&'static str>,
             set_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
@@ -82,7 +82,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     if !me.where_fragments.is_empty() {
                         let where_clauses: Vec<String> = me.where_fragments.iter()
                             .enumerate()
-                            .map(|(i, &(col, _))| format!(
+                            .map(|(i, (col, _))| format!(
                                 "{} = ${}", col, me.set_args.len() + me.inc_ops.len() + i + 1))
                             .collect();
                         sql.push_str(" WHERE ");
