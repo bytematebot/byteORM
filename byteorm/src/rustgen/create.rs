@@ -26,7 +26,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
         pub struct #create_builder_name {
             client: Arc<PgClient>,
             table: String,
-            where_fragments: Vec<(&'static str, usize)>,
+            where_fragments: Vec<(String, usize)>,
             where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             set_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync>>,
             polled: bool,
@@ -82,7 +82,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
                         let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
                         let conds: Vec<String> = where_fragments.iter()
                             .enumerate()
-                            .map(|(i, &(col, idx))| format!("{} = ${}", col, i + 1))
+                            .map(|(i, (col, idx))| format!("{} = ${}", col, i + 1))
                             .collect();
                         sql.push_str(" WHERE ");
                         sql.push_str(&conds.join(" AND "));
