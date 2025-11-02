@@ -9,20 +9,88 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     let where_builder_name = format_ident!("{}WhereBuilder", model.name);
     let table_name = model.name.to_lowercase();
 
-    let where_methods = model.fields.iter().map(|field| {
+    let where_methods = model.fields.iter().flat_map(|field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
 
-        quote! {
+        let base_method = quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 let param_idx = self.args.len() + 1;
                 self.where_clauses.push(format!("{} = ${}", #field_col, param_idx));
                 self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self
             }
+        };
+
+        let null_methods = if is_nullable {
+            let method_is_null = format_ident!("where_{}_is_null", to_snake_case(&field.name));
+            let method_is_not_null = format_ident!("where_{}_is_not_null", to_snake_case(&field.name));
+            vec![
+                quote! {
+                    pub fn #method_is_null(mut self) -> Self {
+                        self.where_clauses.push(format!("{} IS NULL", #field_col));
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_is_not_null(mut self) -> Self {
+                        self.where_clauses.push(format!("{} IS NOT NULL", #field_col));
+                        self
+                    }
+                }
+            ]
+        } else {
+            vec![]
+        };
+
+        let mut methods = vec![base_method];
+        methods.extend(null_methods);
+
+        if field.type_name == "TimestamptZ" {
+            let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
+            let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
+            let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
+            let method_lte = format_ident!("where_{}_lte", to_snake_case(&field.name));
+
+            methods.extend(vec![
+                quote! {
+                    pub fn #method_gt(mut self, value: #field_type) -> Self {
+                        let param_idx = self.args.len() + 1;
+                        self.where_clauses.push(format!("{} > ${}", #field_col, param_idx));
+                        self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_lt(mut self, value: #field_type) -> Self {
+                        let param_idx = self.args.len() + 1;
+                        self.where_clauses.push(format!("{} < ${}", #field_col, param_idx));
+                        self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_gte(mut self, value: #field_type) -> Self {
+                        let param_idx = self.args.len() + 1;
+                        self.where_clauses.push(format!("{} >= ${}", #field_col, param_idx));
+                        self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self
+                    }
+                },
+                quote! {
+                    pub fn #method_lte(mut self, value: #field_type) -> Self {
+                        let param_idx = self.args.len() + 1;
+                        self.where_clauses.push(format!("{} <= ${}", #field_col, param_idx));
+                        self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self
+                    }
+                }
+            ]);
         }
+
+        methods
     });
 
     let order_by_methods = model.fields.iter().map(|field| {
@@ -238,6 +306,58 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
                 let row = self.client.query_one(&sql, &params[..]).await?;
                 Ok(row.get(0))
+            }
+
+            pub async fn aggregate<T>(self, field: &str, func: &str)
+                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                let func_upper = func.to_uppercase();
+                let mut sql = format!("SELECT {}({}) FROM {}", func_upper, field, self.table);
+                let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
+                if !self.where_clauses.is_empty() {
+                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&where_clauses.join(" AND "));
+                }
+
+                let row = self.client.query_one(&sql, &params[..]).await?;
+                Ok(row.get(0))
+            }
+
+            pub async fn sum<T>(self, field: &str)
+                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                self.aggregate(field, "SUM").await
+            }
+
+            pub async fn avg<T>(self, field: &str)
+                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                self.aggregate(field, "AVG").await
+            }
+
+            pub async fn min<T>(self, field: &str)
+                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                self.aggregate(field, "MIN").await
+            }
+
+            pub async fn max<T>(self, field: &str)
+                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                self.aggregate(field, "MAX").await
             }
         }
 
