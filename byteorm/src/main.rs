@@ -243,6 +243,8 @@ serde_json = "1.0.145"
 chrono = { version = "0.4.42", features = ["serde"]}
 tokio = { version = "1.48.0", features = ["full"]}
 tokio-postgres = { version = "0.7.15", features = ["with-chrono-0_4", "with-serde_json-1"] }
+bb8 = "0.8"
+bb8-postgres = "0.8"
 once_cell = "1.21.3"
 futures-util = "0.3.31"
 "#

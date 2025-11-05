@@ -12,23 +12,23 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
 
     quote! {
         pub struct #delete_builder_name {
-            client: Arc<PgClient>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
             table: String,
             where_fragments: Vec<(String, usize)>,
             where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
-            polled: bool,
+            fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, Box<dyn std::error::Error + Send + Sync>>> + Send>>>,
         }
 
         unsafe impl Send for #delete_builder_name {}
 
         impl #delete_builder_name {
-            pub fn new(client: Arc<PgClient>) -> Self {
+            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
                 Self {
-                    client,
+                    pool,
                     table: #table_name.to_string(),
                     where_fragments: vec![],
                     where_args: vec![],
-                    polled: false,
+                    fut: None,
                 }
             }
 
@@ -38,24 +38,15 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
         impl std::future::Future for #delete_builder_name {
             type Output = Result<u64, Box<dyn std::error::Error + Send + Sync>>;
             fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-                if self.polled {
-                    panic!("future polled more than once");
-                }
-                self.polled = true;
-
-                let client = self.client.clone();
-                let table = self.table.clone();
-                let where_fragments = std::mem::take(&mut self.where_fragments);
-                let where_args = std::mem::take(&mut self.where_args);
-
-                let fut = async move {
-                    if where_fragments.is_empty() {
-                        return Err("DELETE without WHERE clause is not allowed".into());
+                let me = &mut *self;
+                
+                if me.fut.is_none() {
+                    if me.where_fragments.is_empty() {
+                        return std::task::Poll::Ready(Err("DELETE without WHERE clause is not allowed".into()));
                     }
 
-                    let mut sql = format!("DELETE FROM {}", table);
-                    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
-                    let conds: Vec<String> = where_fragments.iter()
+                    let mut sql = format!("DELETE FROM {}", me.table);
+                    let conds: Vec<String> = me.where_fragments.iter()
                         .enumerate()
                         .map(|(i, (col, idx))| {
                             format!("{} = ${}", col, i + 1)
@@ -63,19 +54,25 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
                         .collect();
                     sql.push_str(" WHERE ");
                     sql.push_str(&conds.join(" AND "));
-                    for arg in &where_args {
-                        params.push(arg.as_ref());
+                    
+                    let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
+                    for arg in std::mem::take(&mut me.where_args) {
+                        all_params.push(arg);
                     }
 
-                    let count = client.execute(&sql, &params[..]).await?;
-                    Ok(count)
-                };
-
-                let mut pinned = std::pin::pin!(fut);
-                match std::future::Future::poll(pinned.as_mut(), cx) {
-                    std::task::Poll::Ready(res) => std::task::Poll::Ready(res),
-                    std::task::Poll::Pending => std::task::Poll::Pending,
+                    let pool = me.pool.clone();
+                    let fut = async move {
+                        debug::log_query(&sql, all_params.len());
+                        let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                            all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                        let count = client.execute(&sql, &params[..]).await?;
+                        Ok(count)
+                    };
+                    me.fut = Some(Box::pin(fut));
                 }
+
+                me.fut.as_mut().unwrap().as_mut().poll(cx)
             }
         }
     }

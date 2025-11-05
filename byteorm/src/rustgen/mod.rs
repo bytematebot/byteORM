@@ -5,6 +5,7 @@ use crate::Schema;
 
 pub mod client;
 pub mod create;
+pub mod debug;
 pub mod delete;
 pub mod jsonb;
 pub mod model;
@@ -15,6 +16,7 @@ pub mod utils;
 
 pub use client::*;
 pub use create::*;
+pub use debug::*;
 pub use delete::*;
 pub use jsonb::*;
 pub use model::*;
@@ -64,6 +66,43 @@ pub fn generate_rust_code(schema: &Schema) -> String {
             keys.iter()
                 .map(|k| map.get(*k).copied().ok_or("missing key"))
                 .collect()
+        }
+        
+        pub mod debug {
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+            pub fn enable_debug() {
+                DEBUG_ENABLED.store(true, Ordering::Relaxed);
+            }
+
+            pub fn disable_debug() {
+                DEBUG_ENABLED.store(false, Ordering::Relaxed);
+            }
+
+            pub fn is_debug_enabled() -> bool {
+                DEBUG_ENABLED.load(Ordering::Relaxed)
+            }
+
+            pub fn log_query(sql: &str, params_count: usize) {
+                if is_debug_enabled() {
+                    eprintln!("[ByteORM Debug] Executing SQL: {}", sql);
+                    eprintln!("[ByteORM Debug] Parameters count: {}", params_count);
+                }
+            }
+
+            pub fn log_result(operation: &str, rows_affected: u64) {
+                if is_debug_enabled() {
+                    eprintln!("[ByteORM Debug] {} - Rows affected: {}", operation, rows_affected);
+                }
+            }
+
+            pub fn log_error(operation: &str, error: &str) {
+                if is_debug_enabled() {
+                    eprintln!("[ByteORM Debug] Error in {}: {}", operation, error);
+                }
+            }
         }
         
         #jsonb_ext

@@ -224,6 +224,24 @@ pub mod db {
     use tokio_postgres::Client;
     use std::env;
     use crate::Schema;
+    use bb8::Pool;
+    use bb8_postgres::PostgresConnectionManager;
+    use tokio_postgres::NoTls;
+
+    pub type DbPool = Pool<PostgresConnectionManager<NoTls>>;
+
+    pub async fn create_pool() -> Result<DbPool, Box<dyn std::error::Error>> {
+        let db_url = env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
+
+        let manager = PostgresConnectionManager::new_from_stringlike(db_url, NoTls)?;
+        let pool = Pool::builder()
+            .max_size(20)
+            .build(manager)
+            .await?;
+
+        Ok(pool)
+    }
 
     pub async fn connect() -> Result<Client, Box<dyn std::error::Error>> {
         let db_url = env::var("DATABASE_URL")

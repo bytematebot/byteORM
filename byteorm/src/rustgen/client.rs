@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::rustgen::{capitalize_first, generate_jsonb_sub_accessors, pk_args, rust_type_from_schema, to_snake_case};
+use crate::rustgen::{capitalize_first, generate_jsonb_sub_accessors, pk_args, rust_type_from_schema, to_snake_case, is_numeric_type};
 use crate::{Modifier, Schema};
 
 fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -> TokenStream {
@@ -19,7 +19,7 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -
             pub async fn find_unique(&self, id: #pk_type)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                #model_name::find_by_id(self.client.clone(), id).await
+                #model_name::find_by_id(self.pool.clone(), id).await
             }
         }
     } else {
@@ -39,7 +39,7 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -
             pub async fn find_unique(&self, #(#pk_params),*)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                #model_name::find_by_composite_pk(self.client.clone(), #(#pk_args),*).await
+                #model_name::find_by_composite_pk(self.pool.clone(), #(#pk_args),*).await
             }
         }
     }
@@ -61,10 +61,10 @@ fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model
             pub async fn find_or_create(&self, id: #pk_type)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
-                self.client.execute(
-                    &format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING", #table_name, #pk_col, #pk_col),
-                    &[&id]
-                ).await?;
+                let sql = format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING", #table_name, #pk_col, #pk_col);
+                debug::log_query(&sql, 1);
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                client.execute(&sql, &[&id]).await?;
                 self.find_unique(id).await?.ok_or("Record should exist after find_or_create".into())
             }
         }
@@ -94,7 +94,9 @@ fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model
                     "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
                     #table_name, #pk_cols_str, #pk_placeholders_str, #pk_cols_str
                 );
-                self.client.execute(&sql, &[#(#pk_arg_refs),*]).await?;
+                debug::log_query(&sql, #pk_cols_str.split(", ").count());
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                client.execute(&sql, &[#(#pk_arg_refs),*]).await?;
                 self.find_unique(#(#pk_args_call),*).await?.ok_or("Record should exist after find_or_create".into())
             }
         }
@@ -136,7 +138,7 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
             let sub_accessor_field = format_ident!("{}", jsonb_snake);
-            quote! { #sub_accessor_field: #sub_accessor_struct::new(client.clone()) }
+            quote! { #sub_accessor_field: #sub_accessor_struct::new(pool.clone()) }
         });
 
         let jsonb_debug_fields = jsonb_fields.iter().map(|jsonb| {
@@ -150,27 +152,84 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
 
         let computed_methods = std::iter::empty::<TokenStream>();
 
+        let typed_agg_methods = {
+            let field_methods = model.fields.iter()
+                .filter(|f| is_numeric_type(&f.type_name))
+                .map(|field| {
+                    let col_snake = to_snake_case(&field.name);
+                    let sum_name = format_ident!("sum_{}", col_snake);
+                    match field.type_name.as_str() {
+                        "Int" | "Serial" => {
+                            quote! {
+                                pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+                                where
+                                    F: FnOnce(#where_builder) -> #where_builder,
+                                {
+                                    let builder = f(#where_builder::new());
+                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<i64>(#col_snake).await
+                                }
+                            }
+                        }
+                        "BigInt" => {
+                            quote! {
+                                pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+                                where
+                                    F: FnOnce(#where_builder) -> #where_builder,
+                                {
+                                    let builder = f(#where_builder::new());
+                                    #query_builder::from_builder(self.pool.clone(), builder).sum_cast_i64(#col_snake).await
+                                }
+                            }
+                        }
+                        "Float" => {
+                            quote! {
+                                pub async fn #sum_name<F>(&self, f: F) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>
+                                where
+                                    F: FnOnce(#where_builder) -> #where_builder,
+                                {
+                                    let builder = f(#where_builder::new());
+                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<f64>(#col_snake).await
+                                }
+                            }
+                        }
+                        "Real" => {
+                            quote! {
+                                pub async fn #sum_name<F>(&self, f: F) -> Result<f32, Box<dyn std::error::Error + Send + Sync>>
+                                where
+                                    F: FnOnce(#where_builder) -> #where_builder,
+                                {
+                                    let builder = f(#where_builder::new());
+                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<f32>(#col_snake).await
+                                }
+                            }
+                        }
+                        _ => quote! {},
+                    }
+                });
+            quote! { #(#field_methods)* }
+        };
+
         quote! {
             #(#jsonb_sub_accessors)*
 
             #[derive(Clone)]
             pub struct #accessor_struct {
-                client: Arc<PgClient>,
+                pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
                 #(#jsonb_accessor_fields),*
             }
             impl std::fmt::Debug for #accessor_struct {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     f.debug_struct(stringify!(#accessor_struct))
-                        .field("client", &"<PgClient>")
+                        .field("pool", &"<bb8::Pool>")
                         #(#jsonb_debug_fields)*
                         .finish()
                 }
             }
 
             impl #accessor_struct {
-                pub fn new(client: Arc<PgClient>) -> Self {
+                pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
                     Self {
-                        client: client.clone(),
+                        pool: pool.clone(),
                         #(#jsonb_accessor_inits),*
                     }
                 }
@@ -179,46 +238,91 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
                     F: FnOnce(#where_builder) -> #where_builder,
                 {
                     let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.client.clone(), builder).await
+                    #query_builder::from_builder(self.pool.clone(), builder).await
                 }
                 pub async fn find_first<F>(&self, f: F) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 where
                     F: FnOnce(#where_builder) -> #where_builder,
                 {
                     let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.client.clone(), builder).first().await
+                    #query_builder::from_builder(self.pool.clone(), builder).first().await
                 }
+                pub async fn sum<F, T>(&self, f: F, field: &str) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                    T: for<'a> tokio_postgres::types::FromSql<'a> + Default + tokio_postgres::types::ToSql + Sync,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.pool.clone(), builder).sum(field).await
+                }
+                pub async fn count<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.pool.clone(), builder).count().await
+                }
+                pub async fn avg<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                    T: for<'a> tokio_postgres::types::FromSql<'a>,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.pool.clone(), builder).avg::<T>(field).await
+                }
+                pub async fn min<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                    T: for<'a> tokio_postgres::types::FromSql<'a>,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.pool.clone(), builder).min::<T>(field).await
+                }
+                pub async fn max<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    F: FnOnce(#where_builder) -> #where_builder,
+                    T: for<'a> tokio_postgres::types::FromSql<'a>,
+                {
+                    let builder = f(#where_builder::new());
+                    #query_builder::from_builder(self.pool.clone(), builder).max::<T>(field).await
+                }
+                #typed_agg_methods
                 pub fn update<F>(&self, f: F) -> #update_builder
                 where
                     F: FnOnce(#update_builder) -> #update_builder,
                 {
-                    let builder = #update_builder::new(self.client.clone());
+                    let builder = #update_builder::new(self.pool.clone());
                     f(builder)
                 }
                 pub fn upsert<F>(&self, f: F) -> #upsert_builder
                 where
                     F: FnOnce(#upsert_builder) -> #upsert_builder,
                 {
-                    let builder = #upsert_builder::new(self.client.clone());
+                    let builder = #upsert_builder::new(self.pool.clone());
                     f(builder)
                 }
                 pub fn create<F>(&self, f: F) -> #create_builder
                 where
                     F: FnOnce(#create_builder) -> #create_builder,
                 {
-                    let builder = #create_builder::new(self.client.clone());
+                    let builder = #create_builder::new(self.pool.clone());
                     f(builder)
                 }
                 pub fn delete<F>(&self, f: F) -> #delete_builder
                 where
                     F: FnOnce(#delete_builder) -> #delete_builder,
                 {
-                    let builder = #delete_builder::new(self.client.clone());
+                    let builder = #delete_builder::new(self.pool.clone());
                     f(builder)
                 }
                 #find_unique
                 #find_or_create
-                pub fn client(&self) -> &PgClient { &self.client }
+                pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>, tokio_postgres::Error> {
+                    self.pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())
+                }
+                pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>> {
+                    &self.pool
+                }
             }
         }
     });
@@ -226,7 +330,7 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
     let accessor_inits = schema.models.iter().map(|model| {
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));
         let accessor_struct = format_ident!("{}Accessor", model.name);
-        quote! { #accessor_name: #accessor_struct::new(client.clone()) }
+        quote! { #accessor_name: #accessor_struct::new(pool.clone()) }
     });
 
     let debug_accessor_fields = schema.models.iter().map(|model| {
@@ -239,32 +343,37 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
         #(#accessor_structs)*
 
         pub struct Client {
-            client: Arc<PgClient>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
             #(#model_accessors),*
         }
         impl std::fmt::Debug for Client {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct("Client")
-                    .field("client", &"<PgClient>")
+                    .field("pool", &"<bb8::Pool>")
                     #(#debug_accessor_fields)*
                     .finish()
             }
         }
         impl Client {
             pub async fn new(connection_string: &str) -> Result<Self, Error> {
-                let (client, connection) = tokio_postgres::connect(connection_string, NoTls).await?;
-                tokio::spawn(async move {
-                    if let Err(e) = connection.await {
-                        eprintln!("connection error: {}", e);
-                    }
-                });
-                let client = Arc::new(client);
+                let manager = bb8_postgres::PostgresConnectionManager::new_from_stringlike(
+                    connection_string,
+                    NoTls,
+                )?;
+                let pool = bb8::Pool::builder()
+                    .max_size(20)
+                    .build(manager)
+                    .await?;
+                let pool = Arc::new(pool);
                 Ok(Self {
-                    client: client.clone(),
+                    pool: pool.clone(),
                     #(#accessor_inits),*
                 })
             }
-            pub fn client(&self) -> &PgClient { &self.client }
+            pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<NoTls>>, Error> {
+                self.pool.get().await.map_err(|e| Error::__private_api_timeout())
+            }
+            pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<NoTls>> { &self.pool }
         }
     }
 }

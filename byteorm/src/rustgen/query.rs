@@ -11,6 +11,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
     let where_methods = model.fields.iter().flat_map(|field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
+        let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
@@ -20,6 +21,23 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 let param_idx = self.args.len() + 1;
                 self.where_clauses.push(format!("{} = ${}", #field_col, param_idx));
                 self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                self
+            }
+        };
+
+        let in_method = quote! {
+            pub fn #method_in(mut self, values: Vec<#field_type>) -> Self {
+                if values.is_empty() {
+                    return self;
+                }
+                let start_idx = self.args.len() + 1;
+                let placeholders: Vec<String> = (start_idx..start_idx + values.len())
+                    .map(|i| format!("${}", i))
+                    .collect();
+                self.where_clauses.push(format!("{} IN ({})", #field_col, placeholders.join(", ")));
+                for value in values {
+                    self.args.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                }
                 self
             }
         };
@@ -45,7 +63,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             vec![]
         };
 
-        let mut methods = vec![base_method];
+        let mut methods = vec![base_method, in_method];
         methods.extend(null_methods);
 
         if field.type_name == "TimestamptZ" {
@@ -205,39 +223,42 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
     let builder_struct = quote! {
         pub struct #builder_name {
-            client: Arc<PgClient>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
             table: String,
             where_clauses: Vec<String>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             limit: Option<usize>,
             offset: Option<usize>,
             order_by: Vec<(String, String)>,
+            fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>> + Send>>>,
         }
 
         unsafe impl Send for #builder_name {}
 
         impl #builder_name {
-            pub fn new(client: Arc<PgClient>) -> Self {
+            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
                 Self {
-                    client,
+                    pool,
                     table: #table_name.to_string(),
                     where_clauses: vec![],
                     args: vec![],
                     limit: None,
                     offset: None,
                     order_by: vec![],
+                    fut: None,
                 }
             }
 
-            pub fn from_builder(client: Arc<PgClient>, builder: #where_builder_name) -> Self {
+            pub fn from_builder(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>, builder: #where_builder_name) -> Self {
                 Self {
-                    client,
+                    pool,
                     table: #table_name.to_string(),
                     where_clauses: builder.where_clauses,
                     args: builder.args,
                     limit: builder.limit,
                     offset: builder.offset,
                     order_by: builder.order_by,
+                    fut: None,
                 }
             }
 
@@ -251,43 +272,10 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 self
             }
 
-            async fn build_query(&self) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>> {
-                let mut sql = format!("SELECT * FROM {}", self.table);
-                let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-
-                if !self.where_clauses.is_empty() {
-                    let where_parts: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
-                    sql.push_str(" WHERE ");
-                    sql.push_str(&where_parts.join(" AND "));
-                }
-
-                if !self.order_by.is_empty() {
-                    let order_clauses: Vec<String> = self.order_by.iter()
-                        .map(|(col, dir)| format!("{} {}", col, dir))
-                        .collect();
-                    sql.push_str(" ORDER BY ");
-                    sql.push_str(&order_clauses.join(", "));
-                }
-
-                if let Some(limit) = self.limit {
-                    sql.push_str(&format!(" LIMIT {}", limit));
-                }
-
-                if let Some(offset) = self.offset {
-                    sql.push_str(&format!(" OFFSET {}", offset));
-                }
-
-                let rows = self.client.query(&sql, &params[..]).await?;
-                Ok(rows.into_iter().map(|row| #model_name {
-                    #(#field_gets),*
-                }).collect())
-            }
-
             pub async fn first(self)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
             {
-                let result = self.limit(1).build_query().await?;
+                let result = self.limit(1).await?;
                 Ok(result.into_iter().next())
             }
 
@@ -304,7 +292,10 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     sql.push_str(&where_clauses.join(" AND "));
                 }
 
-                let row = self.client.query_one(&sql, &params[..]).await?;
+                debug::log_query(&sql, params.len());
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let row = client.query_one(&sql, &params[..]).await?;
                 Ok(row.get(0))
             }
 
@@ -324,16 +315,64 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     sql.push_str(&where_clauses.join(" AND "));
                 }
 
-                let row = self.client.query_one(&sql, &params[..]).await?;
+                debug::log_query(&sql, params.len());
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let row = client.query_one(&sql, &params[..]).await?;
                 Ok(row.get(0))
             }
 
             pub async fn sum<T>(self, field: &str)
-                -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+                -> Result<T, Box<dyn std::error::Error + Send + Sync>>
             where
-                T: for<'a> tokio_postgres::types::FromSql<'a>,
+                T: for<'a> tokio_postgres::types::FromSql<'a> + Default + tokio_postgres::types::ToSql + Sync,
             {
-                self.aggregate(field, "SUM").await
+                let default_val = T::default();
+                let default_idx = self.args.len() + 1;
+                let mut sql = format!("SELECT COALESCE(SUM({}), ${}) FROM {}", field, default_idx, self.table);
+                let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
+                if !self.where_clauses.is_empty() {
+                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&where_clauses.join(" AND "));
+                }
+
+                params.push(&default_val);
+
+                debug::log_query(&sql, params.len());
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let row = client.query_one(&sql, &params[..]).await?;
+                Ok(row.get(0))
+            }
+
+            pub async fn sum_cast_i64(self, field: &str)
+                -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+            {
+                let default_val: i64 = 0;
+                let default_idx = self.args.len() + 1;
+                let mut sql = format!(
+                    "SELECT COALESCE(CAST(SUM({}) AS BIGINT), ${}) FROM {}",
+                    field, default_idx, self.table
+                );
+                let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
+                if !self.where_clauses.is_empty() {
+                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&where_clauses.join(" AND "));
+                }
+
+                params.push(&default_val);
+
+                debug::log_query(&sql, params.len());
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let row = client.query_one(&sql, &params[..]).await?;
+                Ok(row.get(0))
             }
 
             pub async fn avg<T>(self, field: &str)
@@ -364,10 +403,57 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         impl Future for #builder_name {
             type Output = Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>;
 
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let future = self.build_query();
-                let mut pinned_future = Box::pin(future);
-                pinned_future.as_mut().poll(cx)
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let me = &mut *self;
+                
+                if me.fut.is_none() {
+                    let pool = me.pool.clone();
+                    let table = me.table.clone();
+                    let where_clauses = me.where_clauses.clone();
+                    let limit = me.limit;
+                    let offset = me.offset;
+                    let order_by = me.order_by.clone();
+                    let args = std::mem::take(&mut me.args);
+                    
+                    let fut = async move {
+                        let mut sql = format!("SELECT * FROM {}", table);
+                        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                            args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+
+                        if !where_clauses.is_empty() {
+                            let where_parts: Vec<String> = where_clauses.iter().map(|s| s.clone()).collect();
+                            sql.push_str(" WHERE ");
+                            sql.push_str(&where_parts.join(" AND "));
+                        }
+
+                        if !order_by.is_empty() {
+                            let order_clauses: Vec<String> = order_by.iter()
+                                .map(|(col, dir)| format!("{} {}", col, dir))
+                                .collect();
+                            sql.push_str(" ORDER BY ");
+                            sql.push_str(&order_clauses.join(", "));
+                        }
+
+                        if let Some(limit) = limit {
+                            sql.push_str(&format!(" LIMIT {}", limit));
+                        }
+
+                        if let Some(offset) = offset {
+                            sql.push_str(&format!(" OFFSET {}", offset));
+                        }
+
+                        debug::log_query(&sql, params.len());
+
+                        let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                        let rows = client.query(&sql, &params[..]).await?;
+                        Ok(rows.into_iter().map(|row| #model_name {
+                            #(#field_gets),*
+                        }).collect())
+                    };
+                    me.fut = Some(Box::pin(fut));
+                }
+                
+                me.fut.as_mut().unwrap().as_mut().poll(cx)
             }
         }
     };

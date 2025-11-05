@@ -133,6 +133,17 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
             )
         };
 
+        let (pk_field_type, pk_field_ident, pk_field_name_in) = if pk_fields.len() == 1 {
+            let pk = &pk_fields[0];
+            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+            let pk_ident = format_ident!("{}", to_snake_case(&pk.name));
+            let pk_method_in = format_ident!("where_{}_in", to_snake_case(&pk.name));
+            (pk_type, pk_ident, pk_method_in)
+        } else {
+            (quote! { () }, format_ident!("_unused"), format_ident!("_unused"))
+        };
+
         let pk_args_clone = if pk_fields.len() == 1 {
             quote! { id }
         } else {
@@ -153,27 +164,53 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
 
             #[derive(Clone)]
             pub struct #sub_accessor_struct {
-                client: Arc<PgClient>,
+                pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
             }
 
             impl std::fmt::Debug for #sub_accessor_struct {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     f.debug_struct(stringify!(#sub_accessor_struct))
-                        .field("client", &"<PgClient>")
+                        .field("pool", &"<bb8::Pool>")
                         .finish()
                 }
             }
 
             impl #sub_accessor_struct {
-                pub fn new(client: Arc<PgClient>) -> Self {
-                    Self { client }
+                pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
+                    Self { pool }
+                }
+
+                pub async fn get_all(&self, #pk_params)
+                    -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>
+                {
+                    match #query_builder::from_builder(
+                        self.pool.clone(),
+                        #where_builder_name::new()
+                            #pk_where_methods
+                    )
+                        .first()
+                        .await
+                    {
+                        Ok(Some(record)) => Ok(record.#jsonb_field_ident.clone()),
+                        Ok(None) => Ok(#defaults_const.clone()),
+                        Err(e) => Err(e),
+                    }
+                }
+
+                pub async fn get_all_as<T>(&self, #pk_params)
+                    -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+                where
+                    T: serde::de::DeserializeOwned,
+                {
+                    let value = self.get_all(#pk_args_clone).await?;
+                    Ok(serde_json::from_value(value)?)
                 }
 
                 pub async fn get(&self, #pk_params, key: &str)
                     -> Result<String, Box<dyn std::error::Error + Send + Sync>>
                 {
                     match #query_builder::from_builder(
-                        self.client.clone(),
+                        self.pool.clone(),
                         #where_builder_name::new()
                             #pk_where_methods
                     )
@@ -195,7 +232,7 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                     T: serde::de::DeserializeOwned,
                 {
                     match #query_builder::from_builder(
-                        self.client.clone(),
+                        self.pool.clone(),
                         #where_builder_name::new()
                             #pk_where_methods
                     )
@@ -226,7 +263,7 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                     -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
                 {
                     match #query_builder::from_builder(
-                        self.client.clone(),
+                        self.pool.clone(),
                         #where_builder_name::new()
                             #pk_where_methods
                     )
@@ -261,7 +298,8 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                     );
 
                     let key_path = format!("{{{}}}", key);
-                    self.client.execute(
+                    let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                    client.execute(
                         &sql,
                         &[#(#pk_args_for_set),*, &key, &value_str, &key_path, &value_str]
                     ).await?;
@@ -274,7 +312,7 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                 ) -> Result<HashMap<String, serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let opt = #query_builder::from_builder(
-                        self.client.clone(),
+                        self.pool.clone(),
                         #where_builder_name::new()
                             #pk_where_methods
                     )
@@ -308,6 +346,33 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                     for (k, v) in values {
                         if let Ok(x) = serde_json::from_value::<T>(v) {
                             map.insert(k, x);
+                        }
+                    }
+                    Ok(map)
+                }
+
+                pub async fn get_many_ids<T>(
+                    &self, ids: &[#pk_field_type], key: &str
+                ) -> Result<HashMap<#pk_field_type, T>, Box<dyn std::error::Error + Send + Sync>>
+                where T: serde::de::DeserializeOwned
+                {
+                    if ids.is_empty() {
+                        return Ok(HashMap::new());
+                    }
+
+                    let records = #query_builder::from_builder(
+                        self.pool.clone(),
+                        #where_builder_name::new()
+                            .#pk_field_name_in(ids.to_vec())
+                    )
+                        .await?;
+
+                    let mut map = HashMap::new();
+                    for record in records {
+                        if let Ok(value) = record.#jsonb_field_ident.get_value::<T>(key) {
+                            map.insert(record.#pk_field_ident, value);
+                        } else if let Ok(value) = #defaults_const.get_value::<T>(key) {
+                            map.insert(record.#pk_field_ident, value);
                         }
                     }
                     Ok(map)
@@ -408,6 +473,7 @@ pub fn generate_inc_methods(model: &crate::Model, target_ops: &str, target_value
 pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fragments: &str) -> impl Iterator<Item = TokenStream> {
     model.fields.iter().flat_map(move |field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
+        let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
@@ -418,6 +484,24 @@ pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fr
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                 self.#fragments_ident.push((#field_col.to_string(), self.#args_ident.len()));
+                self
+            }
+        };
+
+        let in_method = quote! {
+            pub fn #method_in(mut self, values: Vec<#field_type>) -> Self {
+                if values.is_empty() {
+                    return self;
+                }
+                let start_idx = self.#args_ident.len() + 1;
+                let placeholders: Vec<String> = (start_idx..start_idx + values.len())
+                    .map(|i| format!("${}", i))
+                    .collect();
+                let in_clause = format!("{} IN ({})", #field_col, placeholders.join(", "));
+                for value in values {
+                    self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                }
+                self.#fragments_ident.push((in_clause, 0));
                 self
             }
         };
@@ -443,7 +527,7 @@ pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fr
             vec![]
         };
 
-        let mut methods = vec![base_method];
+        let mut methods = vec![base_method, in_method];
         methods.extend(null_methods);
 
         if field.type_name == "TimestamptZ" {
