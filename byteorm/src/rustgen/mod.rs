@@ -1,7 +1,7 @@
+use crate::Schema;
+use quote::quote;
 use std::collections::HashMap;
 use std::fs;
-use quote::quote;
-use crate::Schema;
 
 pub mod client;
 pub mod create;
@@ -42,9 +42,10 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         }
     }
 
-    let structs_and_impls = schema.models.iter().map(|model| {
-        generate_model_with_query_builder(model)
-    });
+    let structs_and_impls = schema
+        .models
+        .iter()
+        .map(|model| generate_model_with_query_builder(model));
 
     let client_struct = generate_client_struct(schema, &jsonb_defaults);
     let jsonb_ext = generate_jsonb_ext();
@@ -67,7 +68,7 @@ pub fn generate_rust_code(schema: &Schema) -> String {
                 .map(|k| map.get(*k).copied().ok_or("missing key"))
                 .collect()
         }
-        
+
         pub mod debug {
             use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -104,7 +105,7 @@ pub fn generate_rust_code(schema: &Schema) -> String {
                 }
             }
         }
-        
+
         #jsonb_ext
         #client_struct
         #(#structs_and_impls)*

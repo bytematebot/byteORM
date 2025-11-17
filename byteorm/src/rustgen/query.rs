@@ -1,7 +1,7 @@
+use crate::rustgen::{generate_field_gets, rust_type_from_schema, to_snake_case};
+use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::{Model, Modifier};
-use crate::rustgen::{generate_field_gets, rust_type_from_schema, to_snake_case};
 
 pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
@@ -405,7 +405,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
             fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
                 let me = &mut *self;
-                
+
                 if me.fut.is_none() {
                     let pool = me.pool.clone();
                     let table = me.table.clone();
@@ -414,7 +414,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     let offset = me.offset;
                     let order_by = me.order_by.clone();
                     let args = std::mem::take(&mut me.args);
-                    
+
                     let fut = async move {
                         let mut sql = format!("SELECT * FROM {}", table);
                         let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
@@ -452,7 +452,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     };
                     me.fut = Some(Box::pin(fut));
                 }
-                
+
                 me.fut.as_mut().unwrap().as_mut().poll(cx)
             }
         }

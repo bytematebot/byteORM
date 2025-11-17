@@ -39,7 +39,10 @@ pub fn log_query_with_params(sql: &str, params: &[&str]) {
 
 pub fn log_result(operation: &str, rows_affected: u64) {
     if is_debug_enabled() {
-        eprintln!("[ByteORM Debug] {} - Rows affected: {}", operation, rows_affected);
+        eprintln!(
+            "[ByteORM Debug] {} - Rows affected: {}",
+            operation, rows_affected
+        );
     }
 }
 

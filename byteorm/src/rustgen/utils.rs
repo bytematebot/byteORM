@@ -1,20 +1,20 @@
-use std::collections::HashMap;
-use quote::{quote, format_ident};
-use proc_macro2::TokenStream;
 use crate::Modifier;
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+use std::collections::HashMap;
 
 pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
     let base_type = match type_name {
-        "BigInt"      => quote! { i64 },
-        "Int"         => quote! { i32 },
-        "String"      => quote! { String },
-        "JsonB"       => quote! { serde_json::Value },
+        "BigInt" => quote! { i64 },
+        "Int" => quote! { i32 },
+        "String" => quote! { String },
+        "JsonB" => quote! { serde_json::Value },
         "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
-        "Boolean"     => quote! { bool },
-        "Float"       => quote! { f64 },
-        "Serial"      => quote! { i32 },
-        "Real"        => quote! { f32 },
-        _             => quote! { String },
+        "Boolean" => quote! { bool },
+        "Float" => quote! { f64 },
+        "Serial" => quote! { i32 },
+        "Real" => quote! { f32 },
+        _ => quote! { String },
     };
 
     if nullable {
@@ -43,35 +43,69 @@ pub fn capitalize_first(s: &str) -> String {
     }
 }
 
-pub fn pk_args(model: &crate::Model) -> (Vec<proc_macro2::Ident>, Vec<proc_macro2::TokenStream>, Vec<String>, Vec<String>, Vec<proc_macro2::TokenStream>) {
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+pub fn pk_args(
+    model: &crate::Model,
+) -> (
+    Vec<proc_macro2::Ident>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<String>,
+    Vec<String>,
+    Vec<proc_macro2::TokenStream>,
+) {
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
-    let pk_names = pk_fields.iter().map(|pk| format_ident!("{}", to_snake_case(&pk.name))).collect();
-    let pk_types = pk_fields.iter().map(|pk| {
-        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        rust_type_from_schema(&pk.type_name, is_nullable)
-    }).collect();
+    let pk_names = pk_fields
+        .iter()
+        .map(|pk| format_ident!("{}", to_snake_case(&pk.name)))
+        .collect();
+    let pk_types = pk_fields
+        .iter()
+        .map(|pk| {
+            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            rust_type_from_schema(&pk.type_name, is_nullable)
+        })
+        .collect();
     let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
     let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
-    let pk_arg_refs = pk_fields.iter().map(|pk| {
-        let name = format_ident!("{}", to_snake_case(&pk.name));
-        quote! { &#name }
-    }).collect();
+    let pk_arg_refs = pk_fields
+        .iter()
+        .map(|pk| {
+            let name = format_ident!("{}", to_snake_case(&pk.name));
+            quote! { &#name }
+        })
+        .collect();
     (pk_names, pk_types, pk_cols, pk_placeholders, pk_arg_refs)
 }
 
-pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashMap<(String, String), String>) -> Vec<TokenStream> {
+pub fn generate_jsonb_sub_accessors(
+    model: &crate::Model,
+    jsonb_defaults: &HashMap<(String, String), String>,
+) -> Vec<TokenStream> {
     let model_name = &model.name;
     let query_builder = format_ident!("{}Query", model.name);
     let where_builder_name = format_ident!("{}WhereBuilder", model.name);
     let table_name = model.name.to_lowercase();
 
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
-    let jsonb_fields: Vec<_> = model.fields.iter()
+    let jsonb_fields: Vec<_> = model
+        .fields
+        .iter()
         .filter(|f| f.type_name == "JsonB")
         .collect();
 
@@ -158,6 +192,8 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
         let insert_pk_part = pk_columns.join(", ");
         let insert_values_part = pk_placeholders.join(", ");
         let conflict_clause = pk_columns.join(", ");
+        let key_placeholder = format!("${}", pk_columns.len() + 1);
+        let value_placeholder = format!("${}", pk_columns.len() + 2);
 
         quote! {
             #default_json_init
@@ -281,28 +317,37 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                 where
                     T: serde::Serialize + Send + Sync,
                 {
-                    let value_json = serde_json::to_value(&value)?;
-                    let value_str = value_json.to_string();
+                    let value_json = serde_json::to_value(&value)
+                        .map_err(|e| format!("Failed to serialize value for key '{}': {}", key, e))?;
 
                     let sql = format!(
-                        "INSERT INTO {} ({}, {}, updated_at) VALUES ({}, jsonb_build_object($1, $2), NOW()) \
-                         ON CONFLICT ({}) DO UPDATE SET {} = jsonb_set(COALESCE({}.{}, '{{}}'::jsonb), $3, $4, true), updated_at = NOW()",
+                        "INSERT INTO {} ({}, {}, updated_at) VALUES ({}, jsonb_set('{{}}'::jsonb, string_to_array({}, '.')::text[], {}::jsonb, true), NOW()) \
+                         ON CONFLICT ({}) DO UPDATE SET {} = jsonb_set(COALESCE({}.{}, '{{}}'::jsonb), string_to_array({}, '.')::text[], {}::jsonb, true), updated_at = NOW()",
                         #table_name,
                         #insert_pk_part,
                         #jsonb_snake,
                         #insert_values_part,
+                        #key_placeholder,
+                        #value_placeholder,
                         #conflict_clause,
                         #jsonb_snake,
                         #table_name,
                         #jsonb_snake,
+                        #key_placeholder,
+                        #value_placeholder,
                     );
 
-                    let key_path = format!("{{{}}}", key);
-                    let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                    let client = self.pool.get().await
+                        .map_err(|e| format!("Failed to get database connection from pool: {}", e))?;
+
+                    let params = vec![#(#pk_args_for_set),*, &key as &(dyn tokio_postgres::types::ToSql + Sync), &value_json as &(dyn tokio_postgres::types::ToSql + Sync)];
+                    debug::log_query(&sql, params.len());
+
                     client.execute(
                         &sql,
-                        &[#(#pk_args_for_set),*, &key, &value_str, &key_path, &value_str]
-                    ).await?;
+                        &params[..]
+                    ).await
+                        .map_err(|e| format!("Database error setting key '{}': {} (SQL: {}, value: {:?})", key, e, sql, value_json))?;
 
                     Ok(())
                 }
@@ -323,6 +368,8 @@ pub fn generate_jsonb_sub_accessors(model: &crate::Model, jsonb_defaults: &HashM
                     if let Some(record) = opt {
                         for &key in keys {
                             if let Some(v) = record.#jsonb_field_ident.get(key) {
+                                out.insert(key.to_string(), v.clone());
+                            } else if let Some(v) = #defaults_const.get(key) {
                                 out.insert(key.to_string(), v.clone());
                             }
                         }
@@ -393,8 +440,14 @@ pub fn is_numeric_type(ty: &str) -> bool {
     matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
 }
 
-pub fn generate_inc_methods(model: &crate::Model, target_ops: &str, target_values: Option<&str>) -> impl Iterator<Item = TokenStream> {
-    model.fields.iter()
+pub fn generate_inc_methods(
+    model: &crate::Model,
+    target_ops: &str,
+    target_values: Option<&str>,
+) -> impl Iterator<Item = TokenStream> {
+    model
+        .fields
+        .iter()
         .filter(|f| is_numeric_type(&f.type_name))
         .map(move |field| {
             let field_col = to_snake_case(&field.name);
@@ -470,7 +523,11 @@ pub fn generate_inc_methods(model: &crate::Model, target_ops: &str, target_value
         })
 }
 
-pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fragments: &str) -> impl Iterator<Item = TokenStream> {
+pub fn generate_where_methods(
+    model: &crate::Model,
+    target_args: &str,
+    target_fragments: &str,
+) -> impl Iterator<Item = TokenStream> {
     model.fields.iter().flat_map(move |field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
         let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
@@ -572,7 +629,13 @@ pub fn generate_where_methods(model: &crate::Model, target_args: &str, target_fr
     })
 }
 
-pub fn generate_set_methods(model: &crate::Model, use_hashmap: bool, hashmap_field: &str, vec_field: Option<&str>, fragments_field: Option<&str>) -> impl Iterator<Item = TokenStream> {
+pub fn generate_set_methods(
+    model: &crate::Model,
+    use_hashmap: bool,
+    hashmap_field: &str,
+    vec_field: Option<&str>,
+    fragments_field: Option<&str>,
+) -> impl Iterator<Item = TokenStream> {
     model.fields.iter().map(move |field| {
         let method_name = format_ident!("set_{}", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
@@ -601,4 +664,3 @@ pub fn generate_set_methods(model: &crate::Model, use_hashmap: bool, hashmap_fie
         }
     })
 }
-

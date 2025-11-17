@@ -1,7 +1,8 @@
-use clap::Parser;
-use std::{env, fs};
-use std::path::{Path, PathBuf};
 use byteorm_lib::*;
+use clap::Parser;
+use std::path::{Path, PathBuf};
+use std::{env, fs};
+mod studio;
 
 #[derive(Parser)]
 #[command(name = "byte")]
@@ -17,6 +18,12 @@ enum Commands {
     Push,
     /// Drop all database tables and reset state (dangerous!)
     Reset,
+    /// Launch ByteORM Studio (web UI) on port 5555
+    Studio {
+        /// Port to bind the Studio server on (default 5555)
+        #[arg(long, default_value_t = 5555)]
+        port: u16,
+    },
 }
 
 #[tokio::main]
@@ -67,9 +74,7 @@ async fn main() {
                 return;
             }
 
-            let previous = snapshot::load_snapshot(&client)
-                .await
-                .unwrap_or(None);
+            let previous = snapshot::load_snapshot(&client).await.unwrap_or(None);
 
             let changes = diff::diff_schemas(previous.as_ref(), &schema);
 
@@ -141,10 +146,41 @@ async fn main() {
 
             println!("Database reset complete!");
         }
+        Some(Commands::Studio { port }) => {
+            println!("Starting ByteORM Studio on http://localhost:{} ...", port);
+
+            let schema_files = discover_schema_files();
+            if schema_files.is_empty() {
+                eprintln!("No schema files found! Create schema.bo or byteorm/*.bo first.");
+                return;
+            }
+
+            let schema = match load_and_merge_schemas(&schema_files) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error loading schemas: {}", e);
+                    return;
+                }
+            };
+
+            let pool = match db::create_pool().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Database pool error: {}", e);
+                    return;
+                }
+            };
+
+            if let Err(e) = crate::studio::run(schema, pool, port).await {
+                eprintln!("Studio error: {}", e);
+            }
+        }
         None => {
             println!("ByteORM CLI v0.1.0");
             println!("Commands:");
-            println!("  push  - Push schema, run migrations, and generate byteorm-client crate");
+            println!("  push   - Push schema, run migrations, and generate byteorm-client crate");
+            println!("  reset  - Drop all database tables and reset state (dangerous!)");
+            println!("  studio - Launch GUI to browse and edit data at http://localhost:5555");
             println!("\nUsage:");
             println!("  Single schema:  create schema.bo");
             println!("  Multi schema:   create byteorm/*.bo files");
@@ -152,7 +188,6 @@ async fn main() {
         }
     }
 }
-
 
 fn discover_schema_files() -> Vec<PathBuf> {
     let current_dir = match env::current_dir() {
@@ -189,7 +224,6 @@ fn discover_schema_files() -> Vec<PathBuf> {
     vec![]
 }
 
-
 fn load_and_merge_schemas(files: &[PathBuf]) -> Result<Schema, Box<dyn std::error::Error>> {
     let mut all_models = Vec::new();
 
@@ -201,9 +235,7 @@ fn load_and_merge_schemas(files: &[PathBuf]) -> Result<Schema, Box<dyn std::erro
         all_models.extend(schema.models);
     }
 
-    Ok(Schema {
-        models: all_models,
-    })
+    Ok(Schema { models: all_models })
 }
 
 fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Error>> {
@@ -215,7 +247,7 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
     fs::create_dir_all(client_path.join("src"))?;
 
     let cargo_toml = generate_client_cargo_toml();
-    fs::write(client_path.join("Cargo.toml"), cargo_toml)?;   
+    fs::write(client_path.join("Cargo.toml"), cargo_toml)?;
 
     let lib_rs = rustgen::generate_rust_code(schema);
     fs::write(client_path.join("src/lib.rs"), lib_rs)?;
@@ -228,8 +260,6 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
 
     Ok(())
 }
-
-
 
 fn generate_client_cargo_toml() -> String {
     r#"[package]
@@ -248,5 +278,5 @@ bb8-postgres = "0.8"
 once_cell = "1.21.3"
 futures-util = "0.3.31"
 "#
-        .to_string()
+    .to_string()
 }

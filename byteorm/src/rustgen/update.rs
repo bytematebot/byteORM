@@ -1,7 +1,10 @@
+use crate::rustgen::{
+    generate_field_gets, generate_inc_methods, generate_set_methods, generate_where_methods,
+    is_numeric_type, rust_type_from_schema, to_snake_case,
+};
+use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::{Model, Modifier};
-use crate::rustgen::{generate_field_gets, generate_inc_methods, generate_set_methods, generate_where_methods, is_numeric_type, rust_type_from_schema, to_snake_case};
 
 pub fn generate_update_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
@@ -10,7 +13,8 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
 
     let where_methods = generate_where_methods(model, "where_args", "where_fragments");
 
-    let set_methods = generate_set_methods(model, false, "", Some("set_args"), Some("set_fragments"));
+    let set_methods =
+        generate_set_methods(model, false, "", Some("set_args"), Some("set_fragments"));
 
     let inc_methods = generate_inc_methods(model, "inc_ops", None);
 
@@ -53,12 +57,12 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
             type Output = Result<#model_name, Box<dyn std::error::Error + Send + Sync>>;
             fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
                 let me = &mut *self;
-                
+
                 if me.fut.is_none() {
                     if me.set_fragments.is_empty() && me.inc_ops.is_empty() {
                         return std::task::Poll::Ready(Err("No fields to update".into()));
                     }
-                    
+
                     let mut sql = format!("UPDATE {} SET ", me.table);
                     let mut set_clauses: Vec<String> = vec![];
                     let mut param_idx = 1;
@@ -78,7 +82,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                         param_idx += 1;
                     }
                     sql.push_str(&set_clauses.join(", "));
-                    
+
                     let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
                     for arg in std::mem::take(&mut me.set_args) {
                         all_params.push(arg);
@@ -86,7 +90,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     for (_, _, val) in &me.inc_ops {
                         all_params.push(Box::new(*val));
                     }
-                    
+
                     if !me.where_fragments.is_empty() {
                         let where_clauses: Vec<String> = me.where_fragments.iter()
                             .enumerate()
@@ -100,7 +104,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                         }
                     }
                     sql.push_str(" RETURNING *");
-                    
+
                     let pool = me.pool.clone();
                     let fut = async move {
                         debug::log_query(&sql, all_params.len());
@@ -114,7 +118,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     };
                     me.fut = Some(Box::pin(fut));
                 }
-                
+
                 me.fut.as_mut().unwrap().as_mut().poll(cx)
             }
         }

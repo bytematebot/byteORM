@@ -1,7 +1,11 @@
+use crate::rustgen::{
+    generate_create_builder, generate_delete_builder, generate_field_gets,
+    generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args,
+    rust_type_from_schema, to_snake_case,
+};
+use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::{Model, Modifier};
-use crate::rustgen::{generate_create_builder, generate_delete_builder, generate_field_gets, generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args, rust_type_from_schema, to_snake_case};
 
 pub fn generate_model_with_query_builder(model: &Model) -> TokenStream {
     let model_struct = generate_model_struct(model);
@@ -27,7 +31,10 @@ pub fn generate_model_struct(model: &Model) -> TokenStream {
     let name = format_ident!("{}", model.name);
     let fields = model.fields.iter().map(|field| {
         let field_name = format_ident!("{}", field.name);
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let is_nullable = field
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
 
         quote! {
@@ -45,8 +52,14 @@ pub fn generate_model_struct(model: &Model) -> TokenStream {
 
 fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     let field_gets = generate_field_gets(model);

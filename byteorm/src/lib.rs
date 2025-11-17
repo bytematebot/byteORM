@@ -4,7 +4,6 @@ mod parser;
 use pest::Parser;
 use pest_derive::Parser;
 
-
 pub mod rustgen;
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -13,10 +12,9 @@ pub struct SchemaParser;
 pub use ast::*;
 pub use parser::parse_schema;
 
-
 pub mod snapshot {
-    use tokio_postgres::Client;
     use crate::Schema;
+    use tokio_postgres::Client;
 
     pub async fn init_snapshot_table(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
         let create_table = "CREATE TABLE IF NOT EXISTS _byteorm_schema ( id SERIAL PRIMARY KEY, schema_json JSONB NOT NULL, created_at TIMESTAMP DEFAULT now(), updated_at TIMESTAMP DEFAULT now() )";
@@ -25,29 +23,37 @@ pub mod snapshot {
         Ok(())
     }
 
-    pub async fn save_snapshot(client: &Client, schema: &Schema) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn save_snapshot(
+        client: &Client,
+        schema: &Schema,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let json_value = serde_json::to_value(schema)?;
 
-        client.execute(
-            "DELETE FROM _byteorm_schema WHERE id != 0",
-            &[],
-        ).await.ok();
+        client
+            .execute("DELETE FROM _byteorm_schema WHERE id != 0", &[])
+            .await
+            .ok();
 
-        client.execute(
-            "INSERT INTO _byteorm_schema (schema_json, updated_at) VALUES ($1, now())",
-            &[&json_value], 
-        ).await?;
+        client
+            .execute(
+                "INSERT INTO _byteorm_schema (schema_json, updated_at) VALUES ($1, now())",
+                &[&json_value],
+            )
+            .await?;
 
         println!("Snapshot saved to database");
         Ok(())
     }
 
-
-    pub async fn load_snapshot(client: &Client) -> Result<Option<Schema>, Box<dyn std::error::Error>> {
-        let rows = client.query(
-            "SELECT schema_json FROM _byteorm_schema ORDER BY updated_at DESC LIMIT 1",
-            &[],
-        ).await?;
+    pub async fn load_snapshot(
+        client: &Client,
+    ) -> Result<Option<Schema>, Box<dyn std::error::Error>> {
+        let rows = client
+            .query(
+                "SELECT schema_json FROM _byteorm_schema ORDER BY updated_at DESC LIMIT 1",
+                &[],
+            )
+            .await?;
 
         if rows.is_empty() {
             return Ok(None);
@@ -56,20 +62,47 @@ pub mod snapshot {
         let json_value: serde_json::Value = rows[0].get(0);
         Ok(Some(serde_json::from_value(json_value)?))
     }
-
 }
 
-
-
 pub mod diff {
-    use crate::{Schema, Model, Field, Modifier};
+    use crate::{Field, Model, Modifier, Schema};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FieldSignature {
+        type_name: String,
+        nullable: bool,
+        default_literal: Option<String>,
+        has_index: bool,
+    }
+
+    impl FieldSignature {
+        fn new(field: &Field) -> Self {
+            Self {
+                type_name: field.type_name.clone(),
+                nullable: field.is_nullable_column(),
+                default_literal: field.sql_default_literal(),
+                has_index: field.has_index(),
+            }
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub enum Change {
         CreateTable(Model),
-        AddColumn { table: String, field: Field },
-        RemoveColumn { table: String, column: String },
-        AlterColumn { table: String, column: String, old: Field, new: Field },
+        AddColumn {
+            table: String,
+            field: Field,
+        },
+        RemoveColumn {
+            table: String,
+            column: String,
+        },
+        AlterColumn {
+            table: String,
+            column: String,
+            old: Field,
+            new: Field,
+        },
         RemoveTable(String),
     }
 
@@ -100,6 +133,21 @@ pub mod diff {
                                 table: curr_model.name.clone(),
                                 column: prev_field.name.clone(),
                             });
+                        }
+                    }
+
+                    for curr_field in &curr_model.fields {
+                        if let Some(prev_field) =
+                            prev_model.fields.iter().find(|f| f.name == curr_field.name)
+                        {
+                            if FieldSignature::new(prev_field) != FieldSignature::new(curr_field) {
+                                changes.push(Change::AlterColumn {
+                                    table: curr_model.name.clone(),
+                                    column: curr_field.name.clone(),
+                                    old: prev_field.clone(),
+                                    new: curr_field.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -141,6 +189,7 @@ pub mod codegen {
                 Modifier::NotNull => sql.push_str(" NOT NULL"),
                 Modifier::Nullable => sql.push_str(" NULL"),
                 Modifier::Unique => sql.push_str(" UNIQUE"),
+                Modifier::Index => {}
                 Modifier::ForeignKey { model, field } => {
                     let fk_field = field.as_deref().unwrap_or("id");
                     sql.push_str(&format!(" REFERENCES {} ({})", model, fk_field));
@@ -152,9 +201,9 @@ pub mod codegen {
             if let Some(value) = field.get_default_value() {
                 let sql_type = postgres_type(&field.type_name);
                 if matches!(
-                sql_type,
-                "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
-            ) || value == "now()"
+                    sql_type,
+                    "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
+                ) || value == "now()"
                 {
                     sql.push_str(&format!(" DEFAULT {}", value));
                 } else {
@@ -166,22 +215,29 @@ pub mod codegen {
         sql
     }
 
-
-
-
     pub fn change_to_sql(change: &Change) -> String {
         match change {
             Change::CreateTable(model) => {
                 let mut sql = format!("CREATE TABLE IF NOT EXISTS {} ( ", model.name);
-                let pk_columns: Vec<String> = model.fields
+                let pk_columns: Vec<String> = model
+                    .fields
                     .iter()
-                    .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+                    .filter(|f| {
+                        f.modifiers
+                            .iter()
+                            .any(|m| matches!(m, Modifier::PrimaryKey))
+                    })
                     .map(|f| f.name.clone())
                     .collect();
 
                 for (idx, field) in model.fields.iter().enumerate() {
                     let mut field_sql = field_to_sql(field);
-                    if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) && pk_columns.len() > 1 {
+                    if field
+                        .modifiers
+                        .iter()
+                        .any(|m| matches!(m, Modifier::PrimaryKey))
+                        && pk_columns.len() > 1
+                    {
                         field_sql = field_sql.replace(" PRIMARY KEY", "");
                     }
                     sql.push_str(&field_sql);
@@ -194,13 +250,120 @@ pub mod codegen {
                     sql.push_str(&format!(", PRIMARY KEY ({}) ", pk_columns.join(", ")));
                 }
                 sql.push_str(");");
+
+                for field in &model.fields {
+                    if field.modifiers.iter().any(|m| matches!(m, Modifier::Index)) {
+                        let table_name = model.name.to_lowercase();
+                        let field_name = field.name.to_lowercase();
+                        let index_name = format!("idx_{}_{}", table_name, field_name);
+                        sql.push_str(&format!(
+                            " CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                            index_name, table_name, field_name
+                        ));
+                    }
+                }
+
+                for attr in &model.model_attributes {
+                    if attr.name == "index" {
+                        if let Some(args) = &attr.args {
+                            let table_name = model.name.to_lowercase();
+                            let args_content =
+                                args.trim_start_matches('(').trim_end_matches(')').trim();
+
+                            if args_content.starts_with('[') && args_content.ends_with(']') {
+                                let fields: Vec<&str> = args_content[1..args_content.len() - 1]
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .collect();
+                                let fields_str = fields.join("_");
+                                let index_name = format!("idx_{}_{}", table_name, fields_str);
+                                let fields_sql = fields.join(", ");
+                                sql.push_str(&format!(
+                                    " CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                                    index_name, table_name, fields_sql
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 sql
             }
             Change::AddColumn { table, field } => {
-                format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field))
+                let mut sql = format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field));
+                if field.has_index() {
+                    let table_name = table.to_lowercase();
+                    let field_name = field.name.to_lowercase();
+                    let index_name = format!("idx_{}_{}", table_name, field_name);
+                    sql.push_str(&format!(
+                        " CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                        index_name, table, field.name
+                    ));
+                }
+                sql
             }
             Change::RemoveColumn { table, column } => {
                 format!("ALTER TABLE {} DROP COLUMN {};", table, column)
+            }
+            Change::AlterColumn {
+                table,
+                column,
+                old,
+                new,
+            } => {
+                let mut statements = Vec::new();
+
+                if old.type_name != new.type_name {
+                    statements.push(format!(
+                        "ALTER TABLE {} ALTER COLUMN {} TYPE {};",
+                        table,
+                        column,
+                        postgres_type(&new.type_name)
+                    ));
+                }
+
+                if old.is_nullable_column() != new.is_nullable_column() {
+                    if new.is_nullable_column() {
+                        statements.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
+                            table, column
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+                            table, column
+                        ));
+                    }
+                }
+
+                if old.sql_default_literal() != new.sql_default_literal() {
+                    match new.sql_default_literal() {
+                        Some(default) => statements.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {};",
+                            table, column, default
+                        )),
+                        None => statements.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
+                            table, column
+                        )),
+                    }
+                }
+
+                if old.has_index() != new.has_index() {
+                    let table_name = table.to_lowercase();
+                    let column_name = column.to_lowercase();
+                    let index_name = format!("idx_{}_{}", table_name, column_name);
+                    if new.has_index() {
+                        statements.push(format!(
+                            "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                            index_name, table, column
+                        ));
+                    } else {
+                        statements.push(format!("DROP INDEX IF EXISTS {};", index_name));
+                    }
+                }
+
+                statements.join(" ")
             }
             Change::RemoveTable(name) => {
                 format!("DROP TABLE IF EXISTS {};", name)
@@ -208,7 +371,6 @@ pub mod codegen {
             _ => String::new(),
         }
     }
-
 
     pub fn generate_migration_sql(changes: &[Change]) -> String {
         let mut sql = String::new();
@@ -219,13 +381,12 @@ pub mod codegen {
     }
 }
 
-
 pub mod db {
-    use tokio_postgres::Client;
-    use std::env;
     use crate::Schema;
     use bb8::Pool;
     use bb8_postgres::PostgresConnectionManager;
+    use std::env;
+    use tokio_postgres::Client;
     use tokio_postgres::NoTls;
 
     pub type DbPool = Pool<PostgresConnectionManager<NoTls>>;
@@ -235,10 +396,7 @@ pub mod db {
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
         let manager = PostgresConnectionManager::new_from_stringlike(db_url, NoTls)?;
-        let pool = Pool::builder()
-            .max_size(20)
-            .build(manager)
-            .await?;
+        let pool = Pool::builder().max_size(20).build(manager).await?;
 
         Ok(pool)
     }
@@ -247,7 +405,8 @@ pub mod db {
         let db_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
-        let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::tls::NoTls).await?;
+        let (client, connection) =
+            tokio_postgres::connect(&db_url, tokio_postgres::tls::NoTls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -258,7 +417,10 @@ pub mod db {
         Ok(client)
     }
 
-    pub async fn reset_database(client: &tokio_postgres::Client, schema: &Schema) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn reset_database(
+        client: &tokio_postgres::Client,
+        schema: &Schema,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for model in &schema.models {
             let table_name = model.name.to_lowercase();
             let sql = format!("DROP TABLE IF EXISTS {} CASCADE;", table_name);
@@ -269,8 +431,6 @@ pub mod db {
 
         Ok(())
     }
-
-
 
     pub async fn execute_sql(client: &Client, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
         for statement in sql.split(';').filter(|s| !s.trim().is_empty()) {
@@ -295,6 +455,4 @@ pub mod db {
         }
         Ok(())
     }
-
 }
-

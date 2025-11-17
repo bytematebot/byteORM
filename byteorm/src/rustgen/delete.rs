@@ -1,7 +1,7 @@
+use crate::Model;
+use crate::rustgen::generate_where_methods;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::Model;
-use crate::rustgen::{generate_where_methods};
 
 pub fn generate_delete_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
@@ -39,7 +39,7 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
             type Output = Result<u64, Box<dyn std::error::Error + Send + Sync>>;
             fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
                 let me = &mut *self;
-                
+
                 if me.fut.is_none() {
                     if me.where_fragments.is_empty() {
                         return std::task::Poll::Ready(Err("DELETE without WHERE clause is not allowed".into()));
@@ -54,7 +54,7 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
                         .collect();
                     sql.push_str(" WHERE ");
                     sql.push_str(&conds.join(" AND "));
-                    
+
                     let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
                     for arg in std::mem::take(&mut me.where_args) {
                         all_params.push(arg);

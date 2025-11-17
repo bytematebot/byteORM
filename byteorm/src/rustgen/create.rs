@@ -1,17 +1,26 @@
+use crate::rustgen::{
+    generate_field_gets, generate_set_methods, generate_where_methods, rust_type_from_schema,
+    to_snake_case,
+};
+use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::{Model, Modifier};
-use crate::rustgen::{generate_field_gets, generate_set_methods, generate_where_methods, rust_type_from_schema, to_snake_case};
 
 pub fn generate_create_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let create_builder_name = format_ident!("{}Create", model.name);
     let table_name = model.name.to_lowercase();
 
-    let required_fields: Vec<String> = model.fields.iter()
+    let required_fields: Vec<String> = model
+        .fields
+        .iter()
         .filter(|field| {
-            !field.attributes.iter().any(|a| a.name == "default") &&
-            !field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable))
+            !field.attributes.iter().any(|a| a.name == "default")
+                && !field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::Nullable))
+                && field.type_name != "Serial"
         })
         .map(|field| to_snake_case(&field.name))
         .collect();
@@ -54,7 +63,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
             type Output = Result<#model_name, Box<dyn std::error::Error + Send + Sync>>;
             fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
                 let me = &mut *self;
-                
+
                 if me.fut.is_none() {
                     let required_fields = vec![#(#required_fields),*];
 

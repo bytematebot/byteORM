@@ -1,12 +1,21 @@
-use std::collections::HashMap;
+use crate::rustgen::{
+    capitalize_first, generate_jsonb_sub_accessors, is_numeric_type, pk_args,
+    rust_type_from_schema, to_snake_case,
+};
+use crate::{Modifier, Schema};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::rustgen::{capitalize_first, generate_jsonb_sub_accessors, pk_args, rust_type_from_schema, to_snake_case, is_numeric_type};
-use crate::{Modifier, Schema};
+use std::collections::HashMap;
 
 fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -> TokenStream {
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     if pk_fields.is_empty() {
@@ -45,9 +54,19 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -
     }
 }
 
-fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model, table_name: &str) -> TokenStream {
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+fn generate_find_or_create(
+    model_name: &proc_macro2::Ident,
+    model: &crate::Model,
+    table_name: &str,
+) -> TokenStream {
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     if pk_fields.is_empty() {
@@ -103,7 +122,10 @@ fn generate_find_or_create(model_name: &proc_macro2::Ident, model: &crate::Model
     }
 }
 
-pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String, String), String>) -> TokenStream {
+pub fn generate_client_struct(
+    schema: &Schema,
+    jsonb_defaults: &HashMap<(String, String), String>,
+) -> TokenStream {
     let model_accessors = schema.models.iter().map(|model| {
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));
         let accessor_struct = format_ident!("{}Accessor", model.name);
@@ -342,6 +364,7 @@ pub fn generate_client_struct(schema: &Schema, jsonb_defaults: &HashMap<(String,
     quote! {
         #(#accessor_structs)*
 
+        #[derive(Clone)]
         pub struct Client {
             pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
             #(#model_accessors),*

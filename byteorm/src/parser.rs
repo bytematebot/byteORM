@@ -1,7 +1,7 @@
-use pest::iterators::Pair;
 use crate::ast::*;
 use crate::{Rule, SchemaParser};
 use pest::Parser;
+use pest::iterators::Pair;
 
 pub fn parse_schema(src: &str) -> Result<Schema, String> {
     SchemaParser::parse(Rule::schema, src)
@@ -28,15 +28,18 @@ fn parse_model(pair: Pair<Rule>) -> Model {
     let name = pairs.next().unwrap().as_str().to_string();
     let mut fields = Vec::new();
     let mut computed_fields = Vec::new();
+    let mut model_attributes = Vec::new();
     for pair in pairs {
         match pair.as_rule() {
             Rule::field_decl => fields.push(parse_field(pair)),
             Rule::computed_decl => computed_fields.push(parse_computed(pair)),
+            Rule::model_attr => model_attributes.push(parse_model_attribute(pair)),
             Rule::model_member => {
                 for inner in pair.into_inner() {
                     match inner.as_rule() {
                         Rule::field_decl => fields.push(parse_field(inner)),
                         Rule::computed_decl => computed_fields.push(parse_computed(inner)),
+                        Rule::model_attr => model_attributes.push(parse_model_attribute(inner)),
                         _ => (),
                     }
                 }
@@ -44,7 +47,12 @@ fn parse_model(pair: Pair<Rule>) -> Model {
             _ => (),
         }
     }
-    Model { name, fields, computed_fields }
+    Model {
+        name,
+        fields,
+        computed_fields,
+        model_attributes,
+    }
 }
 
 fn parse_computed(pair: Pair<Rule>) -> ComputedField {
@@ -59,7 +67,7 @@ fn parse_computed(pair: Pair<Rule>) -> ComputedField {
                 Rule::string => {
                     let s = p.as_str();
                     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-                        expression = s[1..s.len()-1].to_string();
+                        expression = s[1..s.len() - 1].to_string();
                     } else {
                         expression = s.to_string();
                     }
@@ -100,7 +108,10 @@ fn parse_field(pair: Pair<Rule>) -> Field {
 
     if is_nullable {
         modifiers.push(Modifier::Nullable);
-    } else if !modifiers.iter().any(|m| matches!(m, Modifier::NotNull | Modifier::PrimaryKey)) {
+    } else if !modifiers
+        .iter()
+        .any(|m| matches!(m, Modifier::NotNull | Modifier::PrimaryKey))
+    {
         modifiers.push(Modifier::NotNull);
     }
 
@@ -127,9 +138,17 @@ fn parse_modifier(pair: Pair<Rule>) -> Result<Modifier, String> {
         "NotNull" => Ok(Modifier::NotNull),
         "Nullable" => Ok(Modifier::Nullable),
         "Unique" => Ok(Modifier::Unique),
+        "Index" => Ok(Modifier::Index),
         "ForeignKey" => parse_foreign_key(args),
         _ => Err(format!("Unknown modifier: {}", mod_name)),
     }
+}
+
+fn parse_model_attribute(pair: Pair<Rule>) -> ModelAttribute {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let args = inner.next().map(|p| p.as_str().to_string());
+    ModelAttribute { name, args }
 }
 
 fn parse_foreign_key(args: Option<String>) -> Result<Modifier, String> {
@@ -164,9 +183,6 @@ fn parse_foreign_key(args: Option<String>) -> Result<Modifier, String> {
 fn parse_attribute(pair: Pair<Rule>) -> Attribute {
     let mut inner = pair.into_inner();
     let name = inner.next().unwrap().as_str().to_string();
-    let args = inner.next().map(|p| {
-        p.as_str().to_string()
-    });
+    let args = inner.next().map(|p| p.as_str().to_string());
     Attribute { name, args }
 }
-

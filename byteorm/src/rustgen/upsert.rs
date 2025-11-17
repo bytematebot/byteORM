@@ -1,15 +1,24 @@
+use crate::rustgen::{
+    generate_field_gets, generate_inc_methods, generate_set_methods, is_numeric_type,
+    rust_type_from_schema, to_snake_case,
+};
+use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use crate::{Model, Modifier};
-use crate::rustgen::{generate_field_gets, generate_inc_methods, generate_set_methods, is_numeric_type, rust_type_from_schema, to_snake_case};
 
 pub fn generate_upsert_builder(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let upsert_builder_name = format_ident!("{}Upsert", model.name);
     let table_name = model.name.to_lowercase();
 
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     if pk_fields.is_empty() {
@@ -28,7 +37,10 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
 
     let where_methods = pk_fields.iter().map(|field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let is_nullable = field
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
 
@@ -46,9 +58,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
 
     let field_gets = generate_field_gets(model);
 
-    let pk_col_names: Vec<String> = pk_fields.iter()
-        .map(|f| to_snake_case(&f.name))
-        .collect();
+    let pk_col_names: Vec<String> = pk_fields.iter().map(|f| to_snake_case(&f.name)).collect();
     let conflict_clause = pk_col_names.join(", ");
 
     quote! {
@@ -84,7 +94,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
             type Output = Result<#model_name, Box<dyn std::error::Error + Send + Sync>>;
             fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
                 let me = &mut *self;
-                
+
                 if me.fut.is_none() {
                     let pk_columns = vec![#(#pk_col_names),*];
 
