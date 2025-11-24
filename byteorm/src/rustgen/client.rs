@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    capitalize_first, generate_jsonb_sub_accessors, is_numeric_type, pk_args,
+    capitalize_first, generate_field_gets, generate_jsonb_sub_accessors, is_numeric_type, pk_args,
     rust_type_from_schema, to_snake_case,
 };
 use crate::{Modifier, Schema};
@@ -76,15 +76,22 @@ fn generate_find_or_create(
         let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
         let pk_col = to_snake_case(&pk.name);
+        let field_gets = generate_field_gets(model);
         quote! {
             pub async fn find_or_create(&self, id: #pk_type)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
-                let sql = format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING", #table_name, #pk_col, #pk_col);
+                let sql = format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING RETURNING *", #table_name, #pk_col, #pk_col);
                 debug::log_query(&sql, 1);
                 let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-                client.execute(&sql, &[&id]).await?;
-                self.find_unique(id).await?.ok_or("Record should exist after find_or_create".into())
+                let rows = client.query(&sql, &[&id]).await?;
+                if let Some(row) = rows.first() {
+                    Ok(#model_name {
+                        #(#field_gets),*
+                    })
+                } else {
+                    self.find_unique(id).await?.ok_or("Record should exist after find_or_create".into())
+                }
             }
         }
     } else {
@@ -105,18 +112,26 @@ fn generate_find_or_create(
             quote! { #name }
         });
 
+        let field_gets = generate_field_gets(model);
+
         quote! {
             pub async fn find_or_create(&self, #(#pk_params),*)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
                 let sql = format!(
-                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
                     #table_name, #pk_cols_str, #pk_placeholders_str, #pk_cols_str
                 );
                 debug::log_query(&sql, #pk_cols_str.split(", ").count());
                 let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-                client.execute(&sql, &[#(#pk_arg_refs),*]).await?;
-                self.find_unique(#(#pk_args_call),*).await?.ok_or("Record should exist after find_or_create".into())
+                let rows = client.query(&sql, &[#(#pk_arg_refs),*]).await?;
+                if let Some(row) = rows.first() {
+                    Ok(#model_name {
+                        #(#field_gets),*
+                    })
+                } else {
+                    self.find_unique(#(#pk_args_call),*).await?.ok_or("Record should exist after find_or_create".into())
+                }
             }
         }
     }
