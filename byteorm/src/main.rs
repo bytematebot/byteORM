@@ -90,6 +90,15 @@ async fn main() {
             let executed = match db::execute_sql(&client, &sql).await {
                 Ok(_) => true,
                 Err(e) => {
+                    eprintln!("❌ Error: {}", e);
+                    // Try to downcast to tokio_postgres::Error to get more details
+                    if let Some(db_err) = e.downcast_ref::<tokio_postgres::Error>() {
+                        if let Some(sql_state) = db_err.code() {
+                            eprintln!("  📍 Error details:");
+                            eprintln!("     Code: {:?}", sql_state);
+                            eprintln!("     Message: {}", db_err);
+                        }
+                    }
                     eprintln!("Error executing SQL: {}", e);
                     eprintln!("Continuing to generate client from schema only.");
                     false

@@ -409,10 +409,10 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 if me.fut.is_none() {
                     let pool = me.pool.clone();
                     let table = me.table.clone();
-                    let where_clauses = me.where_clauses.clone();
+                    let where_clauses = std::mem::take(&mut me.where_clauses);
                     let limit = me.limit;
                     let offset = me.offset;
-                    let order_by = me.order_by.clone();
+                    let order_by = std::mem::take(&mut me.order_by);
                     let args = std::mem::take(&mut me.args);
 
                     let fut = async move {
