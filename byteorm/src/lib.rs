@@ -433,26 +433,19 @@ pub mod db {
     }
 
     pub async fn execute_sql(client: &Client, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
-        for statement in sql.split(';').filter(|s| !s.trim().is_empty()) {
-            let normalized = statement
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            println!("Executing: {}", normalized.trim());
-            match client.execute(&normalized, &[]).await {
-                Ok(_) => println!("  ✅ OK"),
-                Err(e) => {
-                    eprintln!("  ❌ Error: {}", e);
-                    eprintln!("  📍 Error details:");
-                    eprintln!("     Code: {:?}", e.code());
-                    eprintln!("     Message: {}", e);
-                    return Err(e.into());
-                }
+        println!("Executing batch SQL...");
+        match client.batch_execute(sql).await {
+            Ok(_) => {
+                println!("  ✅ Batch execution OK");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("  ❌ Error: {}", e);
+                eprintln!("  📍 Error details:");
+                eprintln!("     Code: {:?}", e.code());
+                eprintln!("     Message: {}", e);
+                Err(e.into())
             }
         }
-        Ok(())
     }
 }
