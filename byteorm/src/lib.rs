@@ -450,4 +450,16 @@ pub mod db {
             }
         }
     }
+
+    pub async fn get_existing_tables(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let rows = client
+            .query(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+                &[],
+            )
+            .await?;
+
+        let tables: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
+        Ok(tables)
+    }
 }

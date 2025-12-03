@@ -74,7 +74,28 @@ async fn main() {
                 return;
             }
 
-            let previous = snapshot::load_snapshot(&client).await.unwrap_or(None);
+            let existing_tables = match db::get_existing_tables(&client).await {
+                Ok(tables) => tables,
+                Err(e) => {
+                    eprintln!("Error getting existing tables: {}", e);
+                    vec![]
+                }
+            };
+
+            let previous = match snapshot::load_snapshot(&client).await.unwrap_or(None) {
+                Some(mut prev_schema) => {
+                    let before_count = prev_schema.models.len();
+                    prev_schema.models.retain(|m| {
+                        existing_tables.iter().any(|t| t.eq_ignore_ascii_case(&m.name))
+                    });
+                    let removed = before_count - prev_schema.models.len();
+                    if removed > 0 {
+                        println!("⚠️  Removed {} model(s) from snapshot (tables don't exist in DB)", removed);
+                    }
+                    Some(prev_schema)
+                }
+                None => None,
+            };
 
             let changes = diff::diff_schemas(previous.as_ref(), &schema);
 
