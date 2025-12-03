@@ -150,6 +150,8 @@ pub mod diff {
                             }
                         }
                     }
+                } else {
+                    changes.push(Change::CreateTable(curr_model.clone()));
                 }
             }
         } else {
