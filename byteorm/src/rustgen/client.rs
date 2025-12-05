@@ -2,10 +2,38 @@ use crate::rustgen::{
     capitalize_first, generate_field_gets, generate_jsonb_sub_accessors, is_numeric_type, pk_args,
     rust_type_from_schema, to_snake_case,
 };
-use crate::{Modifier, Schema};
+use crate::{Field, Modifier, Schema};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use std::collections::HashMap;
+
+struct FieldCategories<'a> {
+    pk_fields: Vec<&'a Field>,
+    jsonb_fields: Vec<&'a Field>,
+    numeric_fields: Vec<&'a Field>,
+}
+
+impl<'a> FieldCategories<'a> {
+    fn from_model(model: &'a crate::Model) -> Self {
+        let mut pk_fields = Vec::new();
+        let mut jsonb_fields = Vec::new();
+        let mut numeric_fields = Vec::new();
+
+        for field in &model.fields {
+            if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) {
+                pk_fields.push(field);
+            }
+            if field.type_name == "JsonB" {
+                jsonb_fields.push(field);
+            }
+            if is_numeric_type(&field.type_name) {
+                numeric_fields.push(field);
+            }
+        }
+
+        Self { pk_fields, jsonb_fields, numeric_fields }
+    }
+}
 
 fn generate_find_unique(model_name: &proc_macro2::Ident, model: &crate::Model) -> TokenStream {
     let pk_fields: Vec<_> = model
@@ -148,6 +176,7 @@ pub fn generate_client_struct(
     });
 
     let accessor_structs = schema.models.iter().map(|model| {
+        let categories = FieldCategories::from_model(model);
         let model_name = format_ident!("{}", model.name);
         let accessor_struct = format_ident!("{}Accessor", model.name);
         let query_builder = format_ident!("{}Query", model.name);
@@ -160,25 +189,21 @@ pub fn generate_client_struct(
         let find_unique = generate_find_unique(&model_name, model);
         let find_or_create = generate_find_or_create(&model_name, model, &table_name);
 
-        let jsonb_fields: Vec<_> = model.fields.iter()
-            .filter(|f| f.type_name == "JsonB")
-            .collect();
-
-        let jsonb_accessor_fields = jsonb_fields.iter().map(|jsonb| {
+        let jsonb_accessor_fields = categories.jsonb_fields.iter().map(|jsonb| {
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
             let sub_accessor_field = format_ident!("{}", jsonb_snake);
             quote! { pub #sub_accessor_field: #sub_accessor_struct }
         });
 
-        let jsonb_accessor_inits = jsonb_fields.iter().map(|jsonb| {
+        let jsonb_accessor_inits = categories.jsonb_fields.iter().map(|jsonb| {
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
             let sub_accessor_field = format_ident!("{}", jsonb_snake);
             quote! { #sub_accessor_field: #sub_accessor_struct::new(pool.clone()) }
         });
 
-        let jsonb_debug_fields = jsonb_fields.iter().map(|jsonb| {
+        let jsonb_debug_fields = categories.jsonb_fields.iter().map(|jsonb| {
             let jsonb_snake = to_snake_case(&jsonb.name);
             let sub_accessor_field = format_ident!("{}", jsonb_snake);
             quote! { .field(stringify!(#sub_accessor_field), &self.#sub_accessor_field) }
@@ -187,11 +212,8 @@ pub fn generate_client_struct(
         let jsonb_sub_accessors = generate_jsonb_sub_accessors(model, jsonb_defaults);
         let where_builder = format_ident!("{}WhereBuilder", model.name);
 
-        let computed_methods = std::iter::empty::<TokenStream>();
-
         let typed_agg_methods = {
-            let field_methods = model.fields.iter()
-                .filter(|f| is_numeric_type(&f.type_name))
+            let field_methods = categories.numeric_fields.iter()
                 .map(|field| {
                     let col_snake = to_snake_case(&field.name);
                     let sum_name = format_ident!("sum_{}", col_snake);

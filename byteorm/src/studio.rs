@@ -290,9 +290,10 @@ const INDEX_HTML_TOP: &str = r#"<!DOCTYPE html><html lang='en'>
             try { return JSON.parse(v); } catch(e) { return v; }
         }
         let pollTimer = null;
+        const POLL_INTERVAL = 5000;
         function startPolling(){
             if(pollTimer) clearInterval(pollTimer);
-            pollTimer = setInterval(()=>{ if(lastTable && editingPk===null) softRefresh(lastTable); }, 1500);
+            pollTimer = setInterval(()=>{ if(lastTable && editingPk===null) softRefresh(lastTable); }, POLL_INTERVAL);
         }
         async function softRefresh(name){
             const r = await fetch('/api/table/'+name);
