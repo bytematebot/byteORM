@@ -287,9 +287,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
-                    sql.push_str(&where_clauses.join(" AND "));
+                    sql.push_str(&self.where_clauses.join(" AND "));
                 }
 
                 debug::log_query(&sql, params.len());
@@ -310,9 +309,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
-                    sql.push_str(&where_clauses.join(" AND "));
+                    sql.push_str(&self.where_clauses.join(" AND "));
                 }
 
                 debug::log_query(&sql, params.len());
@@ -334,9 +332,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
-                    sql.push_str(&where_clauses.join(" AND "));
+                    sql.push_str(&self.where_clauses.join(" AND "));
                 }
 
                 params.push(&default_val);
@@ -361,9 +358,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     self.args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                 if !self.where_clauses.is_empty() {
-                    let where_clauses: Vec<String> = self.where_clauses.iter().map(|s| s.clone()).collect();
                     sql.push_str(" WHERE ");
-                    sql.push_str(&where_clauses.join(" AND "));
+                    sql.push_str(&self.where_clauses.join(" AND "));
                 }
 
                 params.push(&default_val);
@@ -421,9 +417,8 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                             args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 
                         if !where_clauses.is_empty() {
-                            let where_parts: Vec<String> = where_clauses.iter().map(|s| s.clone()).collect();
                             sql.push_str(" WHERE ");
-                            sql.push_str(&where_parts.join(" AND "));
+                            sql.push_str(&where_clauses.join(" AND "));
                         }
 
                         if !order_by.is_empty() {

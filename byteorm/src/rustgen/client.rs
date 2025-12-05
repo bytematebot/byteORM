@@ -409,9 +409,60 @@ pub fn generate_client_struct(
                 })
             }
             pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<NoTls>>, Error> {
-                self.pool.get().await.map_err(|e| Error::__private_api_timeout())
+                self.pool.get().await.map_err(|_| Error::__private_api_timeout())
             }
             pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<NoTls>> { &self.pool }
+
+            pub async fn transaction<F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: FnOnce(Transaction<'_>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send + '_>> + Send,
+                E: From<tokio_postgres::Error> + Send,
+                T: Send,
+            {
+                let mut client = self.pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())?;
+                let tx = client.transaction().await?;
+                let transaction = Transaction { inner: tx };
+                let result = f(transaction).await;
+                match &result {
+                    Ok(_) => {
+                        client.transaction().await?.commit().await.ok();
+                    }
+                    Err(_) => {}
+                }
+                result
+            }
+
+            pub async fn execute_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, Error> {
+                let client = self.pool.get().await.map_err(|_| Error::__private_api_timeout())?;
+                client.execute(sql, params).await
+            }
+
+            pub async fn query_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, Error> {
+                let client = self.pool.get().await.map_err(|_| Error::__private_api_timeout())?;
+                client.query(sql, params).await
+            }
+        }
+
+        pub struct Transaction<'a> {
+            inner: tokio_postgres::Transaction<'a>,
+        }
+
+        impl<'a> Transaction<'a> {
+            pub async fn execute(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, Error> {
+                self.inner.execute(sql, params).await
+            }
+
+            pub async fn query(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, Error> {
+                self.inner.query(sql, params).await
+            }
+
+            pub async fn commit(self) -> Result<(), Error> {
+                self.inner.commit().await
+            }
+
+            pub async fn rollback(self) -> Result<(), Error> {
+                self.inner.rollback().await
+            }
         }
     }
 }
