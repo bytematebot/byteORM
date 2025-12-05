@@ -60,6 +60,51 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         use futures_util::task::Context;
         use std::pin::Pin;
         use futures_util::task::Poll;
+
+        #[derive(Debug)]
+        pub enum ByteOrmError {
+            Pool(String),
+            Query(tokio_postgres::Error),
+            MissingField(String),
+            NotFound(String),
+            Validation(String),
+            Serialization(String),
+        }
+
+        impl std::fmt::Display for ByteOrmError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    ByteOrmError::Pool(msg) => write!(f, "Pool error: {}", msg),
+                    ByteOrmError::Query(e) => write!(f, "Query error: {}", e),
+                    ByteOrmError::MissingField(field) => write!(f, "Missing required field: {}", field),
+                    ByteOrmError::NotFound(msg) => write!(f, "Not found: {}", msg),
+                    ByteOrmError::Validation(msg) => write!(f, "Validation error: {}", msg),
+                    ByteOrmError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
+                }
+            }
+        }
+
+        impl std::error::Error for ByteOrmError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                match self {
+                    ByteOrmError::Query(e) => Some(e),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<tokio_postgres::Error> for ByteOrmError {
+            fn from(e: tokio_postgres::Error) -> Self {
+                ByteOrmError::Query(e)
+            }
+        }
+
+        impl From<serde_json::Error> for ByteOrmError {
+            fn from(e: serde_json::Error) -> Self {
+                ByteOrmError::Serialization(e.to_string())
+            }
+        }
+
         pub fn expect_keys<T: Copy>(
             map: &std::collections::HashMap<String, T>,
             keys: &[&str]

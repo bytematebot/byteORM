@@ -352,6 +352,50 @@ pub fn generate_client_struct(
                     let builder = #delete_builder::new(self.pool.clone());
                     f(builder)
                 }
+                pub async fn create_many(&self, records: Vec<std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync + Send>>>)
+                    -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
+                {
+                    if records.is_empty() {
+                        return Ok(0);
+                    }
+
+                    let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+
+                    let first = &records[0];
+                    let mut columns: Vec<&str> = first.keys().copied().collect();
+                    columns.sort();
+                    let columns_str = columns.join(", ");
+
+                    let mut all_values: Vec<String> = Vec::with_capacity(records.len());
+                    let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = Vec::new();
+                    let mut param_idx = 1;
+
+                    for record in records {
+                        let placeholders: Vec<String> = columns.iter().map(|_| {
+                            let p = format!("${}", param_idx);
+                            param_idx += 1;
+                            p
+                        }).collect();
+                        all_values.push(format!("({})", placeholders.join(", ")));
+                        for col in &columns {
+                            if let Some(val) = record.get(col) {
+                                all_params.push(unsafe { std::ptr::read(val) });
+                            }
+                        }
+                    }
+
+                    let sql = format!(
+                        "INSERT INTO {} ({}) VALUES {}",
+                        #table_name, columns_str, all_values.join(", ")
+                    );
+
+                    debug::log_query(&sql, all_params.len());
+
+                    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                        all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                    let result = client.execute(&sql, &params[..]).await?;
+                    Ok(result)
+                }
                 #find_unique
                 #find_or_create
                 pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>, tokio_postgres::Error> {
