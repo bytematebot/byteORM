@@ -429,10 +429,11 @@ pub fn generate_jsonb_sub_accessors(
     }).collect()
 }
 
-pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> {
-    model.fields.iter().enumerate().map(|(idx, field)| {
+pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> + '_ {
+    model.fields.iter().map(|field| {
         let field_name = format_ident!("{}", field.name);
-        quote! { #field_name: row.get(#idx) }
+        let col_name = to_snake_case(&field.name);
+        quote! { #field_name: row.get(#col_name) }
     })
 }
 
