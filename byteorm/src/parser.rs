@@ -14,13 +14,31 @@ pub fn parse_schema(src: &str) -> Result<Schema, String> {
 
 pub(crate) fn build_ast(pair: Pair<Rule>) -> Schema {
     let mut models = Vec::new();
+    let mut enums = Vec::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::model_decl => models.push(parse_model(inner)),
+            Rule::enum_decl => enums.push(parse_enum(inner)),
             _ => (),
         }
     }
-    Schema { models }
+    Schema { models, enums }
+}
+
+fn parse_enum(pair: Pair<Rule>) -> Enum {
+    let mut pairs = pair.into_inner();
+    let name = pairs.next().unwrap().as_str().to_string();
+    let mut values = Vec::new();
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::enum_value => {
+                let value = pair.into_inner().next().unwrap().as_str().to_string();
+                values.push(value);
+            }
+            _ => (),
+        }
+    }
+    Enum { name, values }
 }
 
 fn parse_model(pair: Pair<Rule>) -> Model {
@@ -154,29 +172,52 @@ fn parse_model_attribute(pair: Pair<Rule>) -> ModelAttribute {
 fn parse_foreign_key(args: Option<String>) -> Result<Modifier, String> {
     let arg_str = args.ok_or("ForeignKey requires arguments")?;
 
-    if let Some(dot_pos) = arg_str.find('.') {
-        let model = arg_str[..dot_pos].trim().to_string();
-        let field = arg_str[dot_pos + 1..].trim().to_string();
+    let mut on_delete = None;
+    let mut reference = arg_str.as_str();
+
+    if let Some(comma_pos) = arg_str.find(',') {
+        reference = arg_str[..comma_pos].trim();
+        let options = arg_str[comma_pos + 1..].trim();
+        
+        if options.contains("onDelete:") || options.contains("onDelete :") {
+            if options.contains("cascade") {
+                on_delete = Some(ForeignKeyAction::Cascade);
+            } else if options.contains("no action") {
+                on_delete = Some(ForeignKeyAction::NoAction);
+            } else if options.contains("set null") {
+                on_delete = Some(ForeignKeyAction::SetNull);
+            } else if options.contains("restrict") {
+                on_delete = Some(ForeignKeyAction::Restrict);
+            }
+        }
+    }
+
+    if let Some(dot_pos) = reference.find('.') {
+        let model = reference[..dot_pos].trim().to_string();
+        let field = reference[dot_pos + 1..].trim().to_string();
         return Ok(Modifier::ForeignKey {
             model,
             field: Some(field),
+            on_delete,
         });
     }
 
-    if let Some(paren_pos) = arg_str.find('(') {
-        let model = arg_str[..paren_pos].trim().to_string();
-        if let Some(close_pos) = arg_str.find(')') {
-            let field = arg_str[paren_pos + 1..close_pos].trim().to_string();
+    if let Some(paren_pos) = reference.find('(') {
+        let model = reference[..paren_pos].trim().to_string();
+        if let Some(close_pos) = reference.find(')') {
+            let field = reference[paren_pos + 1..close_pos].trim().to_string();
             return Ok(Modifier::ForeignKey {
                 model,
                 field: Some(field),
+                on_delete,
             });
         }
     }
 
     Ok(Modifier::ForeignKey {
-        model: arg_str,
+        model: reference.to_string(),
         field: None,
+        on_delete,
     })
 }
 

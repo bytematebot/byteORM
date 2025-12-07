@@ -256,6 +256,7 @@ fn discover_schema_files() -> Vec<PathBuf> {
 
 fn load_and_merge_schemas(files: &[PathBuf]) -> Result<Schema, Box<dyn std::error::Error>> {
     let mut all_models = Vec::new();
+    let mut all_enums = Vec::new();
 
     for file in files {
         let content = fs::read_to_string(file)?;
@@ -263,9 +264,10 @@ fn load_and_merge_schemas(files: &[PathBuf]) -> Result<Schema, Box<dyn std::erro
             .map_err(|e| format!("Error parsing {}: {}", file.display(), e))?;
 
         all_models.extend(schema.models);
+        all_enums.extend(schema.enums);
     }
 
-    Ok(Schema { models: all_models })
+    Ok(Schema { models: all_models, enums: all_enums })
 }
 
 fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Error>> {

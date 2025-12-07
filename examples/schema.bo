@@ -1,3 +1,9 @@
+enum AuditAction {
+    CREATE
+    UPDATE
+    DELETE
+}
+
 model GuildSettings {
     guild_id    BigInt      PrimaryKey
     settings    JsonB       @default('./defaults/config.json') @audit(SettingsAudit)
@@ -6,10 +12,16 @@ model GuildSettings {
 
 model SettingsAudit {
     id          BigInt      PrimaryKey
-    guild_id    BigInt      NotNull     ForeignKey(GuildSettings.guild_id)
+    guild_id    BigInt      NotNull     ForeignKey(GuildSettings.guild_id, onDelete: cascade)
     who         BigInt      NotNull
     changed_at  TimestamptZ @default(now())
+    action      AuditAction NotNull     @default(UPDATE)
     before      JsonB       NotNull
     after       JsonB       NotNull
     diff        JsonB       NotNull
+}
+
+model TestNoAction {
+    id          BigInt      PrimaryKey
+    audit_id    BigInt      NotNull     ForeignKey(SettingsAudit.id, onDelete: no action)
 }

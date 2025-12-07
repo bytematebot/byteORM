@@ -18,7 +18,7 @@ arg_char     = {
 
 nl           = _{ NEWLINE+ }
 
-schema       = { SOI ~ nl? ~ model_decl* ~ nl? ~ EOI }
+schema       = { SOI ~ nl? ~ (enum_decl | model_decl)* ~ nl? ~ EOI }
 field_decl   = { ident ~ type_name ~ field_mods* ~ nl }
 field_mods   = _{ modifier | attr }
 string       = @{ "\"" ~ ( "\\\"" | (!"\"" ~ ANY) )* ~ "\"" }
@@ -32,3 +32,6 @@ model_attr = { "@@" ~ attr_name ~ args? ~ nl }
 model_member = { field_decl | computed_decl | model_attr }
 
 model_decl   = { "model" ~ ident ~ "{" ~ nl? ~ model_member+ ~ nl? ~ "}" ~ nl? }
+
+enum_value   = { ident ~ nl }
+enum_decl    = { "enum" ~ ident ~ "{" ~ nl? ~ enum_value+ ~ nl? ~ "}" ~ nl? }

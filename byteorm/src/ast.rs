@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Schema {
     pub models: Vec<Model>,
+    pub enums: Vec<Enum>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Enum {
+    pub name: String,
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,7 +151,16 @@ pub enum Modifier {
     ForeignKey {
         model: String,
         field: Option<String>,
+        on_delete: Option<ForeignKeyAction>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ForeignKeyAction {
+    Cascade,
+    NoAction,
+    SetNull,
+    Restrict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

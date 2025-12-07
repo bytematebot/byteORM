@@ -10,6 +10,7 @@ pub mod rustgen;
 pub struct SchemaParser;
 
 pub use ast::*;
+use ast::ForeignKeyAction;
 pub use parser::parse_schema;
 
 pub mod snapshot {
@@ -65,7 +66,7 @@ pub mod snapshot {
 }
 
 pub mod diff {
-    use crate::{Field, Model, Modifier, Schema};
+    use crate::{Field, Model, Modifier, Schema, Enum};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct FieldSignature {
@@ -88,6 +89,7 @@ pub mod diff {
 
     #[derive(Debug, Clone)]
     pub enum Change {
+        CreateEnum(Enum),
         CreateTable(Model),
         AddColumn {
             table: String,
@@ -108,6 +110,17 @@ pub mod diff {
 
     pub fn diff_schemas(previous: Option<&Schema>, current: &Schema) -> Vec<Change> {
         let mut changes = Vec::new();
+
+        for enum_def in &current.enums {
+            let exists = if let Some(prev) = previous {
+                prev.enums.iter().any(|e| e.name == enum_def.name)
+            } else {
+                false
+            };
+            if !exists {
+                changes.push(Change::CreateEnum(enum_def.clone()));
+            }
+        }
 
         if let Some(prev) = previous {
             for prev_model in &prev.models {
@@ -165,20 +178,20 @@ pub mod diff {
 }
 
 pub mod codegen {
-    use crate::{Field, Modifier, diff::Change};
+    use crate::{Field, Modifier, ForeignKeyAction, diff::Change};
 
-    pub fn postgres_type(type_name: &str) -> &'static str {
+    pub fn postgres_type(type_name: &str) -> String {
         match type_name {
-            "BigInt" => "BIGINT",
-            "Int" => "INTEGER",
-            "String" => "TEXT",
-            "JsonB" => "JSONB",
-            "TimestamptZ" => "TIMESTAMP WITH TIME ZONE",
-            "Timestamp" => "TIMESTAMP",
-            "Boolean" => "BOOLEAN",
-            "Real" => "REAL",
-            "Serial" => "SERIAL",
-            _ => "TEXT",
+            "BigInt" => "BIGINT".to_string(),
+            "Int" => "INTEGER".to_string(),
+            "String" => "TEXT".to_string(),
+            "JsonB" => "JSONB".to_string(),
+            "TimestamptZ" => "TIMESTAMP WITH TIME ZONE".to_string(),
+            "Timestamp" => "TIMESTAMP".to_string(),
+            "Boolean" => "BOOLEAN".to_string(),
+            "Real" => "REAL".to_string(),
+            "Serial" => "SERIAL".to_string(),
+            _ => type_name.to_string(),
         }
     }
 
@@ -192,9 +205,17 @@ pub mod codegen {
                 Modifier::Nullable => sql.push_str(" NULL"),
                 Modifier::Unique => sql.push_str(" UNIQUE"),
                 Modifier::Index => {}
-                Modifier::ForeignKey { model, field } => {
+                Modifier::ForeignKey { model, field, on_delete } => {
                     let fk_field = field.as_deref().unwrap_or("id");
                     sql.push_str(&format!(" REFERENCES {} ({})", model, fk_field));
+                    if let Some(action) = on_delete {
+                        match action {
+                            ForeignKeyAction::Cascade => sql.push_str(" ON DELETE CASCADE"),
+                            ForeignKeyAction::NoAction => sql.push_str(" ON DELETE NO ACTION"),
+                            ForeignKeyAction::SetNull => sql.push_str(" ON DELETE SET NULL"),
+                            ForeignKeyAction::Restrict => sql.push_str(" ON DELETE RESTRICT"),
+                        }
+                    }
                 }
             }
         }
@@ -203,7 +224,7 @@ pub mod codegen {
             if let Some(value) = field.get_default_value() {
                 let sql_type = postgres_type(&field.type_name);
                 if matches!(
-                    sql_type,
+                    sql_type.as_str(),
                     "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
                 ) || value == "now()"
                 {
@@ -219,6 +240,13 @@ pub mod codegen {
 
     pub fn change_to_sql(change: &Change) -> String {
         match change {
+            Change::CreateEnum(enum_def) => {
+                let values = enum_def.values.iter()
+                    .map(|v| format!("'{}'", v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("CREATE TYPE {} AS ENUM ({});", enum_def.name, values)
+            }
             Change::CreateTable(model) => {
                 let mut sql = format!("CREATE TABLE IF NOT EXISTS {} ( ", model.name);
                 let pk_columns: Vec<String> = model
