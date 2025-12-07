@@ -249,7 +249,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 }
             }
 
-            pub fn from_builder(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>, builder: #where_builder_name) -> Self {
+            pub fn from_builder(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>, builder: #where_builder_name) -> Self {
                 Self {
                     pool,
                     table: #table_name.to_string(),

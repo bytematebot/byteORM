@@ -156,6 +156,12 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         #(#structs_and_impls)*
     };
 
-    let file: syn::File = syn::parse2(code).unwrap();
-    prettyplease::unparse(&file)
+    match syn::parse2::<syn::File>(code.clone()) {
+        Ok(file) => prettyplease::unparse(&file),
+        Err(e) => {
+            eprintln!("ERROR parsing generated code: {}", e);
+            eprintln!("Generated code:\n{}", code);
+            panic!("Failed to parse generated Rust code");
+        }
+    }
 }
