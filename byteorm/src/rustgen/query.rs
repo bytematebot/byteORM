@@ -223,7 +223,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
     let builder_struct = quote! {
         pub struct #builder_name {
-            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
             table: String,
             where_clauses: Vec<String>,
             args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
@@ -236,7 +236,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         unsafe impl Send for #builder_name {}
 
         impl #builder_name {
-            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
+            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>) -> Self {
                 Self {
                     pool,
                     table: #table_name.to_string(),

@@ -63,7 +63,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
 
     quote! {
         pub struct #upsert_builder_name {
-            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
             table: String,
             pk_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
             set_values: std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
@@ -74,7 +74,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
         unsafe impl Send for #upsert_builder_name {}
 
         impl #upsert_builder_name {
-            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
+            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>) -> Self {
                 Self {
                     pool,
                     table: #table_name.to_string(),

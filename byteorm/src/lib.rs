@@ -417,15 +417,23 @@ pub mod db {
     use bb8_postgres::PostgresConnectionManager;
     use std::env;
     use tokio_postgres::Client;
-    use tokio_postgres::NoTls;
+    use tokio_postgres_rustls::MakeRustlsConnect;
 
-    pub type DbPool = Pool<PostgresConnectionManager<NoTls>>;
+    pub type DbPool = Pool<PostgresConnectionManager<MakeRustlsConnect>>;
 
     pub async fn create_pool() -> Result<DbPool, Box<dyn std::error::Error>> {
         let db_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
-        let manager = PostgresConnectionManager::new_from_stringlike(db_url, NoTls)?;
+        let root_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        };
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let tls = MakeRustlsConnect::new(tls_config);
+
+        let manager = PostgresConnectionManager::new_from_stringlike(db_url, tls)?;
         let pool = Pool::builder().max_size(20).build(manager).await?;
 
         Ok(pool)
@@ -435,8 +443,16 @@ pub mod db {
         let db_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
+        let root_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        };
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let tls = MakeRustlsConnect::new(tls_config);
+
         let (client, connection) =
-            tokio_postgres::connect(&db_url, tokio_postgres::tls::NoTls).await?;
+            tokio_postgres::connect(&db_url, tls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {

@@ -273,7 +273,7 @@ pub fn generate_client_struct(
 
             #[derive(Clone)]
             pub struct #accessor_struct {
-                pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
+                pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
                 #(#jsonb_accessor_fields),*
             }
             impl std::fmt::Debug for #accessor_struct {
@@ -286,7 +286,7 @@ pub fn generate_client_struct(
             }
 
             impl #accessor_struct {
-                pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>) -> Self {
+                pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>) -> Self {
                     Self {
                         pool: pool.clone(),
                         #(#jsonb_accessor_inits),*
@@ -420,10 +420,10 @@ pub fn generate_client_struct(
                 }
                 #find_unique
                 #find_or_create
-                pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>, tokio_postgres::Error> {
+                pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>, tokio_postgres::Error> {
                     self.pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())
                 }
-                pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>> {
+                pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>> {
                     &self.pool
                 }
             }
@@ -447,7 +447,7 @@ pub fn generate_client_struct(
 
         #[derive(Clone)]
         pub struct Client {
-            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>,
+            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
             #(#model_accessors),*
         }
         impl std::fmt::Debug for Client {
@@ -460,9 +460,16 @@ pub fn generate_client_struct(
         }
         impl Client {
             pub async fn new(connection_string: &str) -> Result<Self, Error> {
+                let root_store = rustls::RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+                };
+                let tls_config = rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+                let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
                 let manager = bb8_postgres::PostgresConnectionManager::new_from_stringlike(
                     connection_string,
-                    NoTls,
+                    tls,
                 )?;
                 let pool = bb8::Pool::builder()
                     .max_size(20)
@@ -474,10 +481,10 @@ pub fn generate_client_struct(
                     #(#accessor_inits),*
                 })
             }
-            pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<NoTls>>, Error> {
+            pub async fn get_client(&self) -> Result<bb8::PooledConnection<'_, bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>, Error> {
                 self.pool.get().await.map_err(|_| Error::__private_api_timeout())
             }
-            pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<NoTls>> { &self.pool }
+            pub fn pool(&self) -> &bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>> { &self.pool }
 
             pub async fn transaction<F, T, E>(&self, f: F) -> Result<T, E>
             where
