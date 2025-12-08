@@ -24,6 +24,8 @@ enum Commands {
         #[arg(long, default_value_t = 5555)]
         port: u16,
     },
+    /// Update ByteORM to the latest version from GitHub
+    SelfUpdate,
 }
 
 #[tokio::main]
@@ -205,12 +207,21 @@ async fn main() {
                 eprintln!("Studio error: {}", e);
             }
         }
+        Some(Commands::SelfUpdate) => {
+            println!("🔄 Updating ByteORM to the latest version...");
+            if let Err(e) = self_update().await {
+                eprintln!("❌ Update failed: {}", e);
+                return;
+            }
+            println!("✅ ByteORM updated successfully!");
+        }
         None => {
             println!("ByteORM CLI v0.1.0");
             println!("Commands:");
-            println!("  push   - Push schema, run migrations, and generate byteorm-client crate");
-            println!("  reset  - Drop all database tables and reset state (dangerous!)");
-            println!("  studio - Launch GUI to browse and edit data at http://localhost:5555");
+            println!("  push        - Push schema, run migrations, and generate byteorm-client crate");
+            println!("  reset       - Drop all database tables and reset state (dangerous!)");
+            println!("  studio      - Launch GUI to browse and edit data at http://localhost:5555");
+            println!("  self-update - Update ByteORM to the latest version from GitHub");
             println!("\nUsage:");
             println!("  Single schema:  create schema.bo");
             println!("  Multi schema:   create byteorm/*.bo files");
@@ -304,11 +315,26 @@ serde = { version = "1.0.228", features = ["derive"]}
 serde_json = "1.0.145"
 chrono = { version = "0.4.42", features = ["serde"]}
 tokio = { version = "1.48.0", features = ["full"]}
-tokio-postgres = { version = "0.7.15", features = ["with-chrono-0_4", "with-serde_json-1"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "0.26"
 bb8 = "0.8"
 bb8-postgres = "0.8"
 once_cell = "1.21.3"
 futures-util = "0.3.31"
 "#
     .to_string()
+}
+
+async fn self_update() -> Result<(), Box<dyn std::error::Error>> {
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--git", "https://github.com/bytematebot/byteorm", "--force"])
+        .status()?;
+
+    if !status.success() {
+        return Err("cargo install failed".into());
+    }
+
+    Ok(())
 }
