@@ -67,6 +67,7 @@ pub mod snapshot {
 
 pub mod diff {
     use crate::{Field, Model, Modifier, Schema, Enum};
+    use std::collections::{HashMap, HashSet, VecDeque};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct FieldSignature {
@@ -90,6 +91,8 @@ pub mod diff {
     #[derive(Debug, Clone)]
     pub enum Change {
         CreateEnum(Enum),
+        DropEnum(String),
+        AlterEnum { name: String, added_values: Vec<String> },
         CreateTable(Model),
         AddColumn {
             table: String,
@@ -108,19 +111,115 @@ pub mod diff {
         RemoveTable(String),
     }
 
+    fn get_fk_dependencies(model: &Model) -> Vec<String> {
+        let mut deps = Vec::new();
+        for field in &model.fields {
+            for modifier in &field.modifiers {
+                if let Modifier::ForeignKey { model: ref_model, .. } = modifier {
+                    if ref_model != &model.name {
+                        deps.push(ref_model.clone());
+                    }
+                }
+            }
+        }
+        deps
+    }
+
+    fn topological_sort_models(models: &[Model]) -> Vec<Model> {
+        let model_names: HashSet<String> = models.iter().map(|m| m.name.clone()).collect();
+        let model_map: HashMap<String, &Model> = models.iter().map(|m| (m.name.clone(), m)).collect();
+        
+  
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        
+        for model in models {
+            in_degree.entry(model.name.clone()).or_insert(0);
+            dependents.entry(model.name.clone()).or_insert_with(Vec::new);
+        }
+        
+        for model in models {
+            let deps = get_fk_dependencies(model);
+            for dep in deps {
+                if model_names.contains(&dep) {
+                    *in_degree.get_mut(&model.name).unwrap() += 1;
+                    dependents.get_mut(&dep).unwrap().push(model.name.clone());
+                }
+            }
+        }
+        
+        let mut queue: VecDeque<String> = in_degree
+            .iter()
+            .filter(|entry| *entry.1 == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        
+        let mut sorted = Vec::new();
+        
+        while let Some(name) = queue.pop_front() {
+            if let Some(model) = model_map.get(&name) {
+                sorted.push((*model).clone());
+            }
+            
+            if let Some(deps) = dependents.get(&name) {
+                for dep_name in deps {
+                    if let Some(deg) = in_degree.get_mut(dep_name) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(dep_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
+        if sorted.len() < models.len() {
+            eprintln!("⚠️  Warning: Circular foreign key dependency detected. Some tables may not be created in optimal order.");
+            for model in models {
+                if !sorted.iter().any(|m| m.name == model.name) {
+                    sorted.push(model.clone());
+                }
+            }
+        }
+        
+        sorted
+    }
+
     pub fn diff_schemas(previous: Option<&Schema>, current: &Schema) -> Vec<Change> {
         let mut changes = Vec::new();
 
         for enum_def in &current.enums {
-            let exists = if let Some(prev) = previous {
-                prev.enums.iter().any(|e| e.name == enum_def.name)
+            if let Some(prev) = previous {
+                if let Some(prev_enum) = prev.enums.iter().find(|e| e.name == enum_def.name) {
+                    let added_values: Vec<String> = enum_def.values
+                        .iter()
+                        .filter(|v| !prev_enum.values.contains(v))
+                        .cloned()
+                        .collect();
+                    if !added_values.is_empty() {
+                        changes.push(Change::AlterEnum {
+                            name: enum_def.name.clone(),
+                            added_values,
+                        });
+                    }
+                } else {
+                    changes.push(Change::CreateEnum(enum_def.clone()));
+                }
             } else {
-                false
-            };
-            if !exists {
                 changes.push(Change::CreateEnum(enum_def.clone()));
             }
         }
+
+        if let Some(prev) = previous {
+            for prev_enum in &prev.enums {
+                if !current.enums.iter().any(|e| e.name == prev_enum.name) {
+                    changes.push(Change::DropEnum(prev_enum.name.clone()));
+                }
+            }
+        }
+
+
+        let mut tables_to_create: Vec<Model> = Vec::new();
 
         if let Some(prev) = previous {
             for prev_model in &prev.models {
@@ -164,18 +263,22 @@ pub mod diff {
                         }
                     }
                 } else {
-                    changes.push(Change::CreateTable(curr_model.clone()));
+                    tables_to_create.push(curr_model.clone());
                 }
             }
         } else {
-            for model in &current.models {
-                changes.push(Change::CreateTable(model.clone()));
-            }
+            tables_to_create = current.models.clone();
+        }
+
+        let sorted_tables = topological_sort_models(&tables_to_create);
+        for model in sorted_tables {
+            changes.push(Change::CreateTable(model));
         }
 
         changes
     }
 }
+
 
 pub mod codegen {
     use crate::{Field, Modifier, ForeignKeyAction, diff::Change};
@@ -247,6 +350,16 @@ pub mod codegen {
                     .join(", ");
                 format!("CREATE TYPE {} AS ENUM ({});", enum_def.name, values)
             }
+            Change::DropEnum(name) => {
+                format!("DROP TYPE IF EXISTS {} CASCADE;", name)
+            }
+            Change::AlterEnum { name, added_values } => {
+                added_values.iter()
+                    .map(|v| format!("ALTER TYPE {} ADD VALUE '{}';", name, v))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+
             Change::CreateTable(model) => {
                 let mut sql = format!("CREATE TABLE IF NOT EXISTS {} ( ", model.name);
                 let pk_columns: Vec<String> = model
