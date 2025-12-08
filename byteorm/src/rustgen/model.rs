@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    generate_create_builder, generate_delete_builder, generate_field_gets,
+    generate_create_builder, generate_delete_builder, generate_field_gets, generate_select_columns,
     generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args,
     rust_type_from_schema, to_snake_case,
 };
@@ -63,6 +63,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
         .collect();
 
     let field_gets = generate_field_gets(model);
+    let select_columns = generate_select_columns(model);
 
     let find_by_id_impl = if !pk_fields.is_empty() {
         if pk_fields.len() == 1 {
@@ -76,8 +77,8 @@ fn generate_model_impl(model: &Model) -> TokenStream {
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-                    let sql = format!("SELECT * FROM {} WHERE {} = $1",
-                        stringify!(#model_name).to_lowercase(), #pk_name);
+                    let sql = format!("SELECT {} FROM {} WHERE {} = $1",
+                        #select_columns, stringify!(#model_name).to_lowercase(), #pk_name);
                     debug::log_query(&sql, 1);
                     let row_opt = client.query_opt(&sql, &[&id]).await?;
                     Ok(row_opt.map(|row| #model_name {
@@ -105,8 +106,8 @@ fn generate_model_impl(model: &Model) -> TokenStream {
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-                    let sql = format!("SELECT * FROM {} WHERE {}",
-                        stringify!(#model_name).to_lowercase(), #where_clause);
+                    let sql = format!("SELECT {} FROM {} WHERE {}",
+                        #select_columns, stringify!(#model_name).to_lowercase(), #where_clause);
                     debug::log_query(&sql, #pk_count);
                     let row_opt = client.query_opt(&sql, &[#(#pk_arg_refs),*]).await?;
                     Ok(row_opt.map(|row| #model_name {

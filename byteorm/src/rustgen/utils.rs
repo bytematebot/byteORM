@@ -441,6 +441,25 @@ pub fn is_numeric_type(ty: &str) -> bool {
     matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
 }
 
+pub fn is_builtin_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "BigInt" | "Int" | "String" | "JsonB" | "TimestamptZ" | "Timestamp" 
+        | "Boolean" | "Float" | "Serial" | "Real" | "Text"
+    )
+}
+
+pub fn generate_select_columns(model: &crate::Model) -> String {
+    model.fields.iter().map(|field| {
+        let col_name = to_snake_case(&field.name);
+        if is_builtin_type(&field.type_name) {
+            col_name
+        } else {
+            format!("CAST({} AS TEXT) as {}", col_name, col_name)
+        }
+    }).collect::<Vec<_>>().join(", ")
+}
+
 pub fn generate_inc_methods(
     model: &crate::Model,
     target_ops: &str,

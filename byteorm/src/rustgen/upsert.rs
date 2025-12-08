@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    generate_field_gets, generate_inc_methods, generate_set_methods, is_numeric_type,
+    generate_field_gets, generate_inc_methods, generate_select_columns, generate_set_methods, is_numeric_type,
     rust_type_from_schema, to_snake_case,
 };
 use crate::{Model, Modifier};
@@ -57,6 +57,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
     let inc_methods = generate_inc_methods(model, "inc_ops", Some("set_values"));
 
     let field_gets = generate_field_gets(model);
+    let select_columns = generate_select_columns(model);
 
     let pk_col_names: Vec<String> = pk_fields.iter().map(|f| to_snake_case(&f.name)).collect();
     let conflict_clause = pk_col_names.join(", ");
@@ -142,8 +143,8 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
 
                         let sql = if update_columns.is_empty() && inc_ops.is_empty() {
                             format!(
-                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
-                                table, columns_str, placeholders_str, conflict_clause
+                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING {}",
+                                table, columns_str, placeholders_str, conflict_clause, #select_columns
                             )
                         } else {
                             let mut update_clauses: Vec<String> = vec![];
@@ -164,8 +165,8 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                             }
 
                             format!(
-                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING *",
-                                table, columns_str, placeholders_str, conflict_clause, update_clauses.join(", ")
+                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {} RETURNING {}",
+                                table, columns_str, placeholders_str, conflict_clause, update_clauses.join(", "), #select_columns
                             )
                         };
 

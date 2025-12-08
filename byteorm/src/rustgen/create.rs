@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    generate_field_gets, generate_set_methods, generate_where_methods, rust_type_from_schema,
+    generate_field_gets, generate_select_columns, generate_set_methods, generate_where_methods, rust_type_from_schema,
     to_snake_case,
 };
 use crate::{Model, Modifier};
@@ -30,6 +30,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
     let set_methods = generate_set_methods(model, true, "set_values", None, None);
 
     let field_gets = generate_field_gets(model);
+    let select_columns = generate_select_columns(model);
 
     quote! {
         pub struct #create_builder_name {
@@ -120,8 +121,8 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
                         }
 
                         let sql = format!(
-                            "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
-                            table, columns_str, placeholders_str
+                            "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+                            table, columns_str, placeholders_str, #select_columns
                         );
 
                         debug::log_query(&sql, params.len());

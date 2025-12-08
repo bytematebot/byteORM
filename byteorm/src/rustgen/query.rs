@@ -1,4 +1,4 @@
-use crate::rustgen::{generate_field_gets, rust_type_from_schema, to_snake_case};
+use crate::rustgen::{generate_field_gets, generate_select_columns, rust_type_from_schema, to_snake_case};
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -220,6 +220,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     };
 
     let field_gets = generate_field_gets(model);
+    let select_columns = generate_select_columns(model);
 
     let builder_struct = quote! {
         pub struct #builder_name {
@@ -412,7 +413,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     let args = std::mem::take(&mut me.args);
 
                     let fut = async move {
-                        let mut sql = format!("SELECT * FROM {}", table);
+                        let mut sql = format!("SELECT {} FROM {}", #select_columns, table);
                         let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                             args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
 

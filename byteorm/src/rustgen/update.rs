@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    generate_field_gets, generate_inc_methods, generate_set_methods, generate_where_methods,
+    generate_field_gets, generate_inc_methods, generate_select_columns, generate_set_methods, generate_where_methods,
     is_numeric_type, rust_type_from_schema, to_snake_case,
 };
 use crate::{Model, Modifier};
@@ -19,6 +19,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
     let inc_methods = generate_inc_methods(model, "inc_ops", None);
 
     let field_gets = generate_field_gets(model);
+    let select_columns = generate_select_columns(model);
 
     quote! {
         pub struct #update_builder_name {
@@ -103,7 +104,7 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                             all_params.push(arg);
                         }
                     }
-                    sql.push_str(" RETURNING *");
+                    sql.push_str(&format!(" RETURNING {}", #select_columns));
 
                     let pool = me.pool.clone();
                     let fut = async move {

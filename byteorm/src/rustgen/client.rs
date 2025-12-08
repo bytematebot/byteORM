@@ -1,5 +1,5 @@
 use crate::rustgen::{
-    capitalize_first, generate_field_gets, generate_jsonb_sub_accessors, is_numeric_type, pk_args,
+    capitalize_first, generate_field_gets, generate_jsonb_sub_accessors, generate_select_columns, is_numeric_type, pk_args,
     rust_type_from_schema, to_snake_case,
 };
 use crate::{Field, Modifier, Schema};
@@ -105,11 +105,12 @@ fn generate_find_or_create(
         let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
         let pk_col = to_snake_case(&pk.name);
         let field_gets = generate_field_gets(model);
+        let select_columns = generate_select_columns(model);
         quote! {
             pub async fn find_or_create(&self, id: #pk_type)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
-                let sql = format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING RETURNING *", #table_name, #pk_col, #pk_col);
+                let sql = format!("INSERT INTO {} ({}) VALUES ($1) ON CONFLICT ({}) DO NOTHING RETURNING {}", #table_name, #pk_col, #pk_col, #select_columns);
                 debug::log_query(&sql, 1);
                 let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
                 let rows = client.query(&sql, &[&id]).await?;
@@ -141,14 +142,15 @@ fn generate_find_or_create(
         });
 
         let field_gets = generate_field_gets(model);
+        let select_columns = generate_select_columns(model);
 
         quote! {
             pub async fn find_or_create(&self, #(#pk_params),*)
                 -> Result<#model_name, Box<dyn std::error::Error + Send + Sync>>
             {
                 let sql = format!(
-                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING *",
-                    #table_name, #pk_cols_str, #pk_placeholders_str, #pk_cols_str
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING {}",
+                    #table_name, #pk_cols_str, #pk_placeholders_str, #pk_cols_str, #select_columns
                 );
                 debug::log_query(&sql, #pk_cols_str.split(", ").count());
                 let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
