@@ -328,13 +328,67 @@ futures-util = "0.3.31"
 }
 
 async fn self_update() -> Result<(), Box<dyn std::error::Error>> {
-    let status = std::process::Command::new("cargo")
-        .args(["install", "--git", "https://github.com/bytematebot/byteorm", "--force"])
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    println!("🔄 Updating ByteORM...");
+
+    let current_exe = env::current_exe()?;
+    let temp_dir = env::temp_dir();
+    let backup_path = temp_dir.join("byteorm_old.exe");
+    let new_path = temp_dir.join("byteorm_new.exe");
+
+    println!("📦 Installing new version to temporary location...");
+    let install_status = std::process::Command::new("cargo")
+        .args([
+            "install",
+            "--git",
+            "https://github.com/bytematebot/byteorm",
+            "--force",
+            "--root",
+            temp_dir.to_str().unwrap(),
+        ])
         .status()?;
 
-    if !status.success() {
+    if !install_status.success() {
         return Err("cargo install failed".into());
     }
 
-    Ok(())
+    let installed_exe = temp_dir.join("bin").join("byteorm.exe");
+    if !installed_exe.exists() {
+        return Err("New executable not found after install".into());
+    }
+
+    println!("📝 Creating update script...");
+    let script_path = temp_dir.join("byteorm_update.ps1");
+    let script_content = format!(
+        r#"Start-Sleep -Milliseconds 500
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
+Copy-Item -Path '{}' -Destination '{}' -Force
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
+Write-Host "✅ ByteORM updated successfully!"
+"#,
+        current_exe.display(),
+        installed_exe.display(),
+        current_exe.display(),
+        installed_exe.display(),
+        script_path.display()
+    );
+
+    fs::write(&script_path, script_content)?;
+
+    println!("🚀 Launching update script...");
+    std::process::Command::new("powershell")
+        .args([
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script_path.to_str().unwrap(),
+        ])
+        .spawn()?;
+
+    println!("✅ Update initiated. ByteORM will exit now.");
+    std::process::exit(0);
 }
