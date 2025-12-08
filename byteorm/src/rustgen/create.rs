@@ -66,7 +66,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
                 let me = &mut *self;
 
                 if me.fut.is_none() {
-                    let required_fields = vec![#(#required_fields),*];
+                    let required_fields: Vec<&str> = vec![#(#required_fields),*];
 
                     for req in &required_fields {
                         if !me.set_values.contains_key(req) {
