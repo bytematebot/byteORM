@@ -326,14 +326,17 @@ pub mod codegen {
         if field.is_sql_default() {
             if let Some(value) = field.get_default_value() {
                 let sql_type = postgres_type(&field.type_name);
+                let known_types = ["BOOLEAN", "REAL", "INTEGER", "BIGINT", "SERIAL", "TEXT", "JSONB", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"];
                 if matches!(
                     sql_type.as_str(),
                     "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
                 ) || value == "now()"
                 {
                     sql.push_str(&format!(" DEFAULT {}", value));
-                } else {
+                } else if known_types.contains(&sql_type.as_str()) {
                     sql.push_str(&format!(" DEFAULT '{}'", value));
+                } else {
+                    sql.push_str(&format!(" DEFAULT '{}'::{}", value, field.type_name));
                 }
             }
         }
