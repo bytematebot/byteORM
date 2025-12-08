@@ -473,6 +473,11 @@ pub mod db {
             client.execute(&sql, &[]).await?;
         }
 
+        for enum_def in &schema.enums {
+            let sql = format!("DROP TYPE IF EXISTS {} CASCADE;", enum_def.name);
+            client.execute(&sql, &[]).await?;
+        }
+
         client.execute("TRUNCATE _byteorm_schema;", &[]).await.ok();
 
         Ok(())
