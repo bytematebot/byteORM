@@ -66,7 +66,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         let mut methods = vec![base_method, in_method];
         methods.extend(null_methods);
 
-        if field.type_name == "TimestamptZ" {
+        if field.type_name == "TimestamptZ" || field.type_name == "Snowflake" || field.type_name == "snowflake" || field.type_name == "Int" || field.type_name == "BigInt" || field.type_name == "Serial" || field.type_name == "Float" || field.type_name == "Real" || field.type_name == "String" || field.type_name == "Text" {
             let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
             let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
             let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
@@ -110,6 +110,36 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
         methods
     });
+    let where_methods: Vec<_> = where_methods.collect();
+
+    let include_methods = model.fields.iter()
+        .filter_map(|field| {
+            field.modifiers.iter().find_map(|m| {
+                if let Modifier::ForeignKey { model: target_model, field: target_field, .. } = m {
+                    Some((field, target_model, target_field))
+                } else {
+                    None
+                }
+            })
+        })
+        .map(|(field, target_model, target_field)| {
+            let relation_name = to_snake_case(target_model);
+            let method_name = format_ident!("include_{}", relation_name); 
+            let target_table = target_model.to_lowercase(); 
+            let self_col = to_snake_case(&field.name); 
+            let target_col = target_field.clone().unwrap_or_else(|| "id".to_string()); 
+            
+            quote! {
+                pub fn #method_name(mut self) -> Self {
+                    let subquery = format!(
+                        "(SELECT row_to_json(r) FROM {} r WHERE r.{} = t.{}) as {}",
+                        #target_table, #target_col, #self_col, #relation_name
+                    );
+                    self.includes.push(subquery);
+                    self
+                }
+            }
+        });
 
     let order_by_methods = model.fields.iter().map(|field| {
         let asc_method = format_ident!("order_by_{}_asc", to_snake_case(&field.name));
@@ -127,6 +157,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             }
         }
     });
+    let order_by_methods: Vec<_> = order_by_methods.collect();
 
     let computed_where_methods = model.computed_fields.iter().map(|cf| {
         let snake = to_snake_case(&cf.name);
@@ -164,6 +195,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             }
         }
     });
+    let computed_where_methods: Vec<_> = computed_where_methods.collect();
 
     let computed_order_by_methods = model.computed_fields.iter().map(|cf| {
         let snake = to_snake_case(&cf.name);
@@ -182,6 +214,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             }
         }
     });
+    let computed_order_by_methods: Vec<_> = computed_order_by_methods.collect();
 
     let where_builder_struct = quote! {
         pub struct #where_builder_name {
@@ -231,6 +264,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             limit: Option<usize>,
             offset: Option<usize>,
             order_by: Vec<(String, String)>,
+            includes: Vec<String>,
             fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>> + Send>>>,
         }
 
@@ -246,6 +280,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     limit: None,
                     offset: None,
                     order_by: vec![],
+                    includes: vec![],
                     fut: None,
                 }
             }
@@ -259,9 +294,16 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                     limit: builder.limit,
                     offset: builder.offset,
                     order_by: builder.order_by,
+                    includes: vec![],
                     fut: None,
                 }
             }
+            
+            #(#where_methods)*
+            #(#computed_where_methods)*
+            #(#order_by_methods)*
+            #(#computed_order_by_methods)*
+            #(#include_methods)*
 
             pub fn limit(mut self, limit: usize) -> Self {
                 self.limit = Some(limit);
@@ -272,6 +314,75 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 self.offset = Some(offset);
                 self
             }
+            
+            pub async fn find_first_json(self) 
+                -> Result<Option<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> 
+            {
+                let result = self.limit(1).find_many_json().await?;
+                Ok(result.into_iter().next())
+            }
+
+            pub async fn find_many_json(mut self)
+                -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>>
+            {
+                let pool = self.pool.clone();
+                let table = self.table.clone();
+                let where_clauses = std::mem::take(&mut self.where_clauses);
+                let limit = self.limit;
+                let offset = self.offset;
+                let order_by = std::mem::take(&mut self.order_by);
+                let args = std::mem::take(&mut self.args);
+                let includes = std::mem::take(&mut self.includes);
+                
+                // Construct inner query
+                let mut sql = format!("SELECT * FROM {}", table);
+                
+                if !where_clauses.is_empty() {
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&where_clauses.join(" AND "));
+                }
+
+                if !order_by.is_empty() {
+                    let order_clauses: Vec<String> = order_by.iter()
+                        .map(|(col, dir)| format!("{} {}", col, dir))
+                        .collect();
+                    sql.push_str(" ORDER BY ");
+                    sql.push_str(&order_clauses.join(", "));
+                }
+
+                if let Some(limit) = limit {
+                    sql.push_str(&format!(" LIMIT {}", limit));
+                }
+
+                if let Some(offset) = offset {
+                    sql.push_str(&format!(" OFFSET {}", offset));
+                }
+
+                let mut outer_select = "t.*".to_string();
+                if !includes.is_empty() {
+                    outer_select.push_str(", ");
+                    outer_select.push_str(&includes.join(", "));
+                }
+                
+                let final_sql = format!(
+                    "SELECT row_to_json(root) FROM (SELECT {} FROM ({}) t) root",
+                    outer_select, sql
+                );
+
+                let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    args.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                    
+                debug::log_query(&final_sql, params.len());
+                
+                let rows = client.query(&final_sql, &params[..]).await?;
+                
+                let results: Vec<serde_json::Value> = rows.into_iter()
+                    .map(|row| row.get(0))
+                    .collect();
+                    
+                Ok(results)
+            }
 
             pub async fn first(self)
                 -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
@@ -279,7 +390,7 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
                 let result = self.limit(1).await?;
                 Ok(result.into_iter().next())
             }
-
+            
             pub async fn count(self)
                 -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
             {

@@ -294,6 +294,9 @@ pub fn generate_client_struct(
                         #(#jsonb_accessor_inits),*
                     }
                 }
+                pub fn query(&self) -> #query_builder {
+                    #query_builder::new(self.pool.clone())
+                }
                 pub async fn find_many<F>(&self, f: F) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 where
                     F: FnOnce(#where_builder) -> #where_builder,

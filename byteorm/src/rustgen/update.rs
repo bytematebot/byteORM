@@ -1,6 +1,6 @@
 use crate::rustgen::{
     generate_field_gets, generate_inc_methods, generate_select_columns, generate_set_methods, generate_where_methods,
-    is_numeric_type, rust_type_from_schema, to_snake_case,
+    is_numeric_type, rust_type_from_schema, to_snake_case, is_builtin_type,
 };
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
@@ -20,6 +20,17 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
 
     let field_gets = generate_field_gets(model);
     let select_columns = generate_select_columns(model);
+
+    let enum_cast_entries: Vec<TokenStream> = model
+        .fields
+        .iter()
+        .filter(|field| !is_builtin_type(&field.type_name))
+        .map(|field| {
+            let col_name = to_snake_case(&field.name);
+            let type_name = field.type_name.to_lowercase();
+            quote! { (#col_name, #type_name) }
+        })
+        .collect();
 
     quote! {
         pub struct #update_builder_name {
@@ -63,12 +74,19 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     if me.set_fragments.is_empty() && me.inc_ops.is_empty() {
                         return std::task::Poll::Ready(Err("No fields to update".into()));
                     }
+                    let enum_casts: std::collections::HashMap<&str, &str> = [
+                        #(#enum_cast_entries),*
+                    ].into_iter().collect();
 
                     let mut sql = format!("UPDATE {} SET ", me.table);
                     let mut set_clauses: Vec<String> = vec![];
                     let mut param_idx = 1;
                     for col in me.set_fragments.iter() {
-                        set_clauses.push(format!("{} = ${}", col, param_idx));
+                        if let Some(enum_type) = enum_casts.get(*col) {
+                            set_clauses.push(format!("{} = ${}::TEXT::{}", col, param_idx, enum_type));
+                        } else {
+                            set_clauses.push(format!("{} = ${}", col, param_idx));
+                        }
                         param_idx += 1;
                     }
                     for (field, op, _) in &me.inc_ops {

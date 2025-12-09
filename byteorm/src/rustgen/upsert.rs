@@ -1,6 +1,6 @@
 use crate::rustgen::{
     generate_field_gets, generate_inc_methods, generate_select_columns, generate_set_methods, is_numeric_type,
-    rust_type_from_schema, to_snake_case,
+    rust_type_from_schema, to_snake_case, is_builtin_type,
 };
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
@@ -62,6 +62,17 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
     let pk_col_names: Vec<String> = pk_fields.iter().map(|f| to_snake_case(&f.name)).collect();
     let conflict_clause = pk_col_names.join(", ");
 
+    let enum_cast_entries: Vec<TokenStream> = model
+        .fields
+        .iter()
+        .filter(|field| !is_builtin_type(&field.type_name))
+        .map(|field| {
+            let col_name = to_snake_case(&field.name);
+            let type_name = field.type_name.to_lowercase();
+            quote! { (#col_name, #type_name) }
+        })
+        .collect();
+
     quote! {
         pub struct #upsert_builder_name {
             pool: ConnectionPool,
@@ -121,13 +132,23 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
 
                     let fut = async move {
                         let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                        let enum_casts: std::collections::HashMap<&str, &str> = [
+                            #(#enum_cast_entries),*
+                        ].into_iter().collect();
 
                         let mut columns: Vec<&str> = all_values.keys().copied().collect();
                         columns.sort();
 
-                        let columns_str = columns.join(", ");
-                        let placeholders: Vec<String> = (1..=columns.len())
-                            .map(|i| format!("${}", i))
+                        let columns_str = columns.join(", ");                 
+                        let placeholders: Vec<String> = columns.iter().enumerate()
+                            .map(|(i, col)| {
+                                let idx = i + 1;
+                                if let Some(enum_type) = enum_casts.get(col) {
+                                    format!("${}::TEXT::{}", idx, enum_type)
+                                } else {
+                                    format!("${}", idx)
+                                }
+                            })
                             .collect();
                         let placeholders_str = placeholders.join(", ");
 

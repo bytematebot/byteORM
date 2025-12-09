@@ -50,6 +50,25 @@ pub fn generate_rust_code(schema: &Schema) -> String {
     let client_struct = generate_client_struct(schema, &jsonb_defaults);
     let jsonb_ext = generate_jsonb_ext();
 
+    let enums = schema.enums.iter().map(|e| {
+        let name = term_ident(&e.name);
+        let variants = e.values.iter().map(|v| {
+            let v_ident = term_ident(v);
+            quote! { #v_ident }
+        });
+        quote! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+            #[allow(non_camel_case_types)] 
+            pub enum #name {
+                #(#variants),*
+            }
+        }
+    });
+
+    fn term_ident(s: &str) -> proc_macro2::Ident {
+       quote::format_ident!("{}", s)
+    }
+
     let code = quote! {
         use serde::{Deserialize, Serialize};
         use chrono::{DateTime, Utc};
@@ -152,6 +171,7 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         }
 
         #jsonb_ext
+        #(#enums)*
         #client_struct
         #(#structs_and_impls)*
     };
