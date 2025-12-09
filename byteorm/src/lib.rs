@@ -436,7 +436,24 @@ pub mod codegen {
                 sql
             }
             Change::AddColumn { table, field } => {
-                let mut sql = format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field));
+                let is_not_null = field.modifiers.iter().any(|m| matches!(m, Modifier::NotNull));
+                let has_default = field.is_sql_default();
+                
+                let mut sql = if is_not_null && !has_default {
+                    let mut nullable_field = field.clone();
+                    nullable_field.modifiers.retain(|m| !matches!(m, Modifier::NotNull));
+                    if !nullable_field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable)) {
+                        nullable_field.modifiers.push(Modifier::Nullable);
+                    }
+                    
+                    eprintln!("⚠️  Warning: Adding column '{}.{}' as nullable because NOT NULL columns without defaults cannot be added to tables with existing data.", table, field.name);
+                    eprintln!("   To make it NOT NULL, populate existing rows then run: ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;", table, field.name);
+                    
+                    format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(&nullable_field))
+                } else {
+                    format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field))
+                };
+                
                 if field.has_index() {
                     let table_name = table.to_lowercase();
                     let field_name = field.name.to_lowercase();
@@ -475,6 +492,8 @@ pub mod codegen {
                             table, column
                         ));
                     } else {
+                        eprintln!("⚠️  Warning: Setting column '{}.{}' to NOT NULL. If existing rows contain NULL values, this will fail.", table, column);
+                        eprintln!("   Ensure no NULL values exist, or run: UPDATE {} SET {} = <default_value> WHERE {} IS NULL;", table, column, column);
                         statements.push(format!(
                             "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
                             table, column
