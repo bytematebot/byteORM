@@ -34,7 +34,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
 
     quote! {
         pub struct #create_builder_name {
-            pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
+            pool: ConnectionPool,
             table: String,
             where_fragments: Vec<(String, usize)>,
             where_args: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
@@ -45,7 +45,7 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
         unsafe impl Send for #create_builder_name {}
 
         impl #create_builder_name {
-            pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>) -> Self {
+            pub fn new(pool: ConnectionPool) -> Self {
                 Self {
                     pool,
                     table: #table_name.to_string(),

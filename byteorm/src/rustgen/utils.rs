@@ -200,7 +200,7 @@ pub fn generate_jsonb_sub_accessors(
 
             #[derive(Clone)]
             pub struct #sub_accessor_struct {
-                pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>,
+                pool: ConnectionPool,
             }
 
             impl std::fmt::Debug for #sub_accessor_struct {
@@ -212,7 +212,7 @@ pub fn generate_jsonb_sub_accessors(
             }
 
             impl #sub_accessor_struct {
-                pub fn new(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>) -> Self {
+                pub fn new(pool: ConnectionPool) -> Self {
                     Self { pool }
                 }
 

@@ -592,24 +592,38 @@ pub mod db {
         let db_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
-        let root_store = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
-        };
-        let tls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        let tls = MakeRustlsConnect::new(tls_config);
+        let is_local = db_url.contains("localhost") || db_url.contains("127.0.0.1") || db_url.contains("host=localhost");
+        let requires_ssl = db_url.contains("sslmode=require") || db_url.contains("sslmode=verify");
+        
+        if is_local && !requires_ssl {
+            let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls).await?;
+            
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    eprintln!("Connection error: {}", e);
+                }
+            });
+            
+            Ok(client)
+        } else {
+            let root_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+            };
+            let tls_config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let tls = MakeRustlsConnect::new(tls_config);
 
-        let (client, connection) =
-            tokio_postgres::connect(&db_url, tls).await?;
+            let (client, connection) = tokio_postgres::connect(&db_url, tls).await?;
 
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("Connection error: {}", e);
-            }
-        });
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    eprintln!("Connection error: {}", e);
+                }
+            });
 
-        Ok(client)
+            Ok(client)
+        }
     }
 
     pub async fn reset_database(

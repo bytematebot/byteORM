@@ -73,7 +73,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
             let pk_name = to_snake_case(&pk.name);
 
             quote! {
-                pub async fn find_by_id(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>, id: #pk_type)
+                pub async fn find_by_id(pool: ConnectionPool, id: #pk_type)
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
@@ -102,7 +102,7 @@ fn generate_model_impl(model: &Model) -> TokenStream {
             let pk_count = pk_fields.len();
 
             quote! {
-                pub async fn find_by_composite_pk(pool: Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>, #(#pk_params),*)
+                pub async fn find_by_composite_pk(pool: ConnectionPool, #(#pk_params),*)
                     -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
                 {
                     let client = pool.get().await.map_err(|_| "Failed to get connection from pool")?;
