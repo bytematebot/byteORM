@@ -298,6 +298,19 @@ pub mod codegen {
         }
     }
 
+
+    pub fn get_type_default(type_name: &str) -> &'static str {
+        match type_name {
+            "BigInt" | "Int" | "Serial" => "0",
+            "Real" => "0.0",
+            "Boolean" => "false",
+            "String" | "Text" => "''",
+            "JsonB" => "'{}'::jsonb",
+            "TimestamptZ" | "Timestamp" => "now()",
+            _ => "''"  
+        }
+    }
+
     pub fn field_to_sql(field: &Field) -> String {
         let mut sql = format!("{} {}", field.name, postgres_type(&field.type_name));
 
@@ -440,16 +453,13 @@ pub mod codegen {
                 let has_default = field.is_sql_default();
                 
                 let mut sql = if is_not_null && !has_default {
-                    let mut nullable_field = field.clone();
-                    nullable_field.modifiers.retain(|m| !matches!(m, Modifier::NotNull));
-                    if !nullable_field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable)) {
-                        nullable_field.modifiers.push(Modifier::Nullable);
-                    }
+                    let temp_default = get_type_default(&field.type_name);
+                    eprintln!("ℹ️  Adding NOT NULL column '{}.{}' with temporary default '{}' for existing rows.", table, field.name, temp_default);
                     
-                    eprintln!("⚠️  Warning: Adding column '{}.{}' as nullable because NOT NULL columns without defaults cannot be added to tables with existing data.", table, field.name);
-                    eprintln!("   To make it NOT NULL, populate existing rows then run: ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;", table, field.name);
-                    
-                    format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(&nullable_field))
+                    format!(
+                        "ALTER TABLE {} ADD COLUMN {} DEFAULT {}; ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
+                        table, field_to_sql(field), temp_default, table, field.name
+                    )
                 } else {
                     format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field))
                 };
@@ -492,8 +502,12 @@ pub mod codegen {
                             table, column
                         ));
                     } else {
-                        eprintln!("⚠️  Warning: Setting column '{}.{}' to NOT NULL. If existing rows contain NULL values, this will fail.", table, column);
-                        eprintln!("   Ensure no NULL values exist, or run: UPDATE {} SET {} = <default_value> WHERE {} IS NULL;", table, column, column);
+                        let temp_default = get_type_default(&new.type_name);
+                        eprintln!("ℹ️  Setting column '{}.{}' to NOT NULL. Updating existing NULL values to '{}'.", table, column, temp_default);
+                        statements.push(format!(
+                            "UPDATE {} SET {} = {} WHERE {} IS NULL",
+                            table, column, temp_default, column
+                        ));
                         statements.push(format!(
                             "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
                             table, column
