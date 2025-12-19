@@ -167,6 +167,268 @@ fn generate_find_or_create(
     }
 }
 
+pub fn generate_accessor_for_model(
+    model: &crate::Model,
+    jsonb_defaults: &HashMap<(String, String), String>,
+) -> TokenStream {
+    let categories = FieldCategories::from_model(model);
+    let model_name = format_ident!("{}", model.name);
+    let accessor_struct = format_ident!("{}Accessor", model.name);
+    let query_builder = format_ident!("{}Query", model.name);
+    let update_builder = format_ident!("{}Update", model.name);
+    let upsert_builder = format_ident!("{}Upsert", model.name);
+    let create_builder = format_ident!("{}Create", model.name);
+    let delete_builder = format_ident!("{}Delete", model.name);
+    let table_name = model.name.to_lowercase();
+
+    let find_unique = generate_find_unique(&model_name, model);
+    let find_or_create = generate_find_or_create(&model_name, model, &table_name);
+
+    let jsonb_accessor_fields = categories.jsonb_fields.iter().map(|jsonb| {
+        let jsonb_snake = to_snake_case(&jsonb.name);
+        let sub_accessor_struct =
+            format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
+        let sub_accessor_field = format_ident!("{}", jsonb_snake);
+        quote! { pub #sub_accessor_field: #sub_accessor_struct }
+    });
+
+    let jsonb_accessor_inits = categories.jsonb_fields.iter().map(|jsonb| {
+        let jsonb_snake = to_snake_case(&jsonb.name);
+        let sub_accessor_struct =
+            format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
+        let sub_accessor_field = format_ident!("{}", jsonb_snake);
+        quote! { #sub_accessor_field: #sub_accessor_struct::new(pool.clone()) }
+    });
+
+    let jsonb_debug_fields = categories.jsonb_fields.iter().map(|jsonb| {
+        let jsonb_snake = to_snake_case(&jsonb.name);
+        let sub_accessor_field = format_ident!("{}", jsonb_snake);
+        quote! { .field(stringify!(#sub_accessor_field), &self.#sub_accessor_field) }
+    });
+
+    let jsonb_sub_accessors = generate_jsonb_sub_accessors(model, jsonb_defaults);
+    let where_builder = format_ident!("{}WhereBuilder", model.name);
+
+    let typed_agg_methods = {
+        let field_methods = categories.numeric_fields.iter().map(|field| {
+            let col_snake = to_snake_case(&field.name);
+            let sum_name = format_ident!("sum_{}", col_snake);
+            match field.type_name.as_str() {
+                "Int" | "Serial" => {
+                    quote! {
+                        pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+                        where
+                            F: FnOnce(#where_builder) -> #where_builder,
+                        {
+                            let builder = f(#where_builder::new());
+                            #query_builder::from_builder(self.pool.clone(), builder).sum::<i64>(#col_snake).await
+                        }
+                    }
+                }
+                "BigInt" => {
+                    quote! {
+                        pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+                        where
+                            F: FnOnce(#where_builder) -> #where_builder,
+                        {
+                            let builder = f(#where_builder::new());
+                            #query_builder::from_builder(self.pool.clone(), builder).sum_cast_i64(#col_snake).await
+                        }
+                    }
+                }
+                "Float" => {
+                    quote! {
+                        pub async fn #sum_name<F>(&self, f: F) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>
+                        where
+                            F: FnOnce(#where_builder) -> #where_builder,
+                        {
+                            let builder = f(#where_builder::new());
+                            #query_builder::from_builder(self.pool.clone(), builder).sum::<f64>(#col_snake).await
+                        }
+                    }
+                }
+                "Real" => {
+                    quote! {
+                        pub async fn #sum_name<F>(&self, f: F) -> Result<f32, Box<dyn std::error::Error + Send + Sync>>
+                        where
+                            F: FnOnce(#where_builder) -> #where_builder,
+                        {
+                            let builder = f(#where_builder::new());
+                            #query_builder::from_builder(self.pool.clone(), builder).sum::<f32>(#col_snake).await
+                        }
+                    }
+                }
+                _ => quote! {},
+            }
+        });
+        quote! { #(#field_methods)* }
+    };
+
+    quote! {
+        #(#jsonb_sub_accessors)*
+
+        #[derive(Clone)]
+        pub struct #accessor_struct {
+            pool: ConnectionPool,
+            #(#jsonb_accessor_fields),*
+        }
+        impl std::fmt::Debug for #accessor_struct {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!(#accessor_struct))
+                    .field("pool", &"<ConnectionPool>")
+                    #(#jsonb_debug_fields)*
+                    .finish()
+            }
+        }
+
+        impl #accessor_struct {
+            pub fn new(pool: ConnectionPool) -> Self {
+                Self {
+                    pool: pool.clone(),
+                    #(#jsonb_accessor_inits),*
+                }
+            }
+            pub fn query(&self) -> #query_builder {
+                #query_builder::new(self.pool.clone())
+            }
+            pub async fn find_many<F>(&self, f: F) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).await
+            }
+            pub async fn find_first<F>(&self, f: F) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).first().await
+            }
+            pub async fn sum<F, T>(&self, f: F, field: &str) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+                T: for<'a> tokio_postgres::types::FromSql<'a> + Default + tokio_postgres::types::ToSql + Sync,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).sum(field).await
+            }
+            pub async fn count<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).count().await
+            }
+            pub async fn avg<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).avg::<T>(field).await
+            }
+            pub async fn min<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).min::<T>(field).await
+            }
+            pub async fn max<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+            where
+                F: FnOnce(#where_builder) -> #where_builder,
+                T: for<'a> tokio_postgres::types::FromSql<'a>,
+            {
+                let builder = f(#where_builder::new());
+                #query_builder::from_builder(self.pool.clone(), builder).max::<T>(field).await
+            }
+            #typed_agg_methods
+            pub fn update<F>(&self, f: F) -> #update_builder
+            where
+                F: FnOnce(#update_builder) -> #update_builder,
+            {
+                let builder = #update_builder::new(self.pool.clone());
+                f(builder)
+            }
+            pub fn upsert<F>(&self, f: F) -> #upsert_builder
+            where
+                F: FnOnce(#upsert_builder) -> #upsert_builder,
+            {
+                let builder = #upsert_builder::new(self.pool.clone());
+                f(builder)
+            }
+            pub fn create<F>(&self, f: F) -> #create_builder
+            where
+                F: FnOnce(#create_builder) -> #create_builder,
+            {
+                let builder = #create_builder::new(self.pool.clone());
+                f(builder)
+            }
+            pub fn delete<F>(&self, f: F) -> #delete_builder
+            where
+                F: FnOnce(#delete_builder) -> #delete_builder,
+            {
+                let builder = #delete_builder::new(self.pool.clone());
+                f(builder)
+            }
+            pub async fn create_many(&self, records: Vec<std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync + Send>>>)
+                -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
+            {
+                if records.is_empty() {
+                    return Ok(0);
+                }
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+
+                let first = &records[0];
+                let mut columns: Vec<&str> = first.keys().copied().collect();
+                columns.sort();
+                let columns_str = columns.join(", ");
+
+                let mut all_values: Vec<String> = Vec::with_capacity(records.len());
+                let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = Vec::new();
+                let mut param_idx = 1;
+
+                for record in records {
+                    let placeholders: Vec<String> = columns.iter().map(|_| {
+                        let p = format!("${}", param_idx);
+                        param_idx += 1;
+                        p
+                    }).collect();
+                    all_values.push(format!("({})", placeholders.join(", ")));
+                    for col in &columns {
+                        if let Some(val) = record.get(col) {
+                            all_params.push(unsafe { std::ptr::read(val) });
+                        }
+                    }
+                }
+
+                let sql = format!(
+                    "INSERT INTO {} ({}) VALUES {}",
+                    #table_name, columns_str, all_values.join(", ")
+                );
+
+                debug::log_query(&sql, all_params.len());
+
+                let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                let result = client.execute(&sql, &params[..]).await?;
+                Ok(result)
+            }
+            #find_unique
+            #find_or_create
+            pub async fn get_client(&self) -> Result<PooledClient<'_>, tokio_postgres::Error> {
+                self.pool.get().await
+            }
+            pub fn pool(&self) -> &ConnectionPool {
+                &self.pool
+            }
+        }
+    }
+}
+
 pub fn generate_client_struct(
     schema: &Schema,
     jsonb_defaults: &HashMap<(String, String), String>,
@@ -177,263 +439,10 @@ pub fn generate_client_struct(
         quote! { pub #accessor_name: #accessor_struct }
     });
 
-    let accessor_structs = schema.models.iter().map(|model| {
-        let categories = FieldCategories::from_model(model);
-        let model_name = format_ident!("{}", model.name);
-        let accessor_struct = format_ident!("{}Accessor", model.name);
-        let query_builder = format_ident!("{}Query", model.name);
-        let update_builder = format_ident!("{}Update", model.name);
-        let upsert_builder = format_ident!("{}Upsert", model.name);
-        let create_builder = format_ident!("{}Create", model.name);
-        let delete_builder = format_ident!("{}Delete", model.name);
-        let table_name = model.name.to_lowercase();
-
-        let find_unique = generate_find_unique(&model_name, model);
-        let find_or_create = generate_find_or_create(&model_name, model, &table_name);
-
-        let jsonb_accessor_fields = categories.jsonb_fields.iter().map(|jsonb| {
-            let jsonb_snake = to_snake_case(&jsonb.name);
-            let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
-            let sub_accessor_field = format_ident!("{}", jsonb_snake);
-            quote! { pub #sub_accessor_field: #sub_accessor_struct }
-        });
-
-        let jsonb_accessor_inits = categories.jsonb_fields.iter().map(|jsonb| {
-            let jsonb_snake = to_snake_case(&jsonb.name);
-            let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(&jsonb.name));
-            let sub_accessor_field = format_ident!("{}", jsonb_snake);
-            quote! { #sub_accessor_field: #sub_accessor_struct::new(pool.clone()) }
-        });
-
-        let jsonb_debug_fields = categories.jsonb_fields.iter().map(|jsonb| {
-            let jsonb_snake = to_snake_case(&jsonb.name);
-            let sub_accessor_field = format_ident!("{}", jsonb_snake);
-            quote! { .field(stringify!(#sub_accessor_field), &self.#sub_accessor_field) }
-        });
-
-        let jsonb_sub_accessors = generate_jsonb_sub_accessors(model, jsonb_defaults);
-        let where_builder = format_ident!("{}WhereBuilder", model.name);
-
-        let typed_agg_methods = {
-            let field_methods = categories.numeric_fields.iter()
-                .map(|field| {
-                    let col_snake = to_snake_case(&field.name);
-                    let sum_name = format_ident!("sum_{}", col_snake);
-                    match field.type_name.as_str() {
-                        "Int" | "Serial" => {
-                            quote! {
-                                pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
-                                where
-                                    F: FnOnce(#where_builder) -> #where_builder,
-                                {
-                                    let builder = f(#where_builder::new());
-                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<i64>(#col_snake).await
-                                }
-                            }
-                        }
-                        "BigInt" => {
-                            quote! {
-                                pub async fn #sum_name<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
-                                where
-                                    F: FnOnce(#where_builder) -> #where_builder,
-                                {
-                                    let builder = f(#where_builder::new());
-                                    #query_builder::from_builder(self.pool.clone(), builder).sum_cast_i64(#col_snake).await
-                                }
-                            }
-                        }
-                        "Float" => {
-                            quote! {
-                                pub async fn #sum_name<F>(&self, f: F) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>
-                                where
-                                    F: FnOnce(#where_builder) -> #where_builder,
-                                {
-                                    let builder = f(#where_builder::new());
-                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<f64>(#col_snake).await
-                                }
-                            }
-                        }
-                        "Real" => {
-                            quote! {
-                                pub async fn #sum_name<F>(&self, f: F) -> Result<f32, Box<dyn std::error::Error + Send + Sync>>
-                                where
-                                    F: FnOnce(#where_builder) -> #where_builder,
-                                {
-                                    let builder = f(#where_builder::new());
-                                    #query_builder::from_builder(self.pool.clone(), builder).sum::<f32>(#col_snake).await
-                                }
-                            }
-                        }
-                        _ => quote! {},
-                    }
-                });
-            quote! { #(#field_methods)* }
-        };
-
-        quote! {
-            #(#jsonb_sub_accessors)*
-
-            #[derive(Clone)]
-            pub struct #accessor_struct {
-                pool: ConnectionPool,
-                #(#jsonb_accessor_fields),*
-            }
-            impl std::fmt::Debug for #accessor_struct {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.debug_struct(stringify!(#accessor_struct))
-                        .field("pool", &"<ConnectionPool>")
-                        #(#jsonb_debug_fields)*
-                        .finish()
-                }
-            }
-
-            impl #accessor_struct {
-                pub fn new(pool: ConnectionPool) -> Self {
-                    Self {
-                        pool: pool.clone(),
-                        #(#jsonb_accessor_inits),*
-                    }
-                }
-                pub fn query(&self) -> #query_builder {
-                    #query_builder::new(self.pool.clone())
-                }
-                pub async fn find_many<F>(&self, f: F) -> Result<Vec<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).await
-                }
-                pub async fn find_first<F>(&self, f: F) -> Result<Option<#model_name>, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).first().await
-                }
-                pub async fn sum<F, T>(&self, f: F, field: &str) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                    T: for<'a> tokio_postgres::types::FromSql<'a> + Default + tokio_postgres::types::ToSql + Sync,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).sum(field).await
-                }
-                pub async fn count<F>(&self, f: F) -> Result<i64, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).count().await
-                }
-                pub async fn avg<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                    T: for<'a> tokio_postgres::types::FromSql<'a>,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).avg::<T>(field).await
-                }
-                pub async fn min<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                    T: for<'a> tokio_postgres::types::FromSql<'a>,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).min::<T>(field).await
-                }
-                pub async fn max<F, T>(&self, f: F, field: &str) -> Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
-                where
-                    F: FnOnce(#where_builder) -> #where_builder,
-                    T: for<'a> tokio_postgres::types::FromSql<'a>,
-                {
-                    let builder = f(#where_builder::new());
-                    #query_builder::from_builder(self.pool.clone(), builder).max::<T>(field).await
-                }
-                #typed_agg_methods
-                pub fn update<F>(&self, f: F) -> #update_builder
-                where
-                    F: FnOnce(#update_builder) -> #update_builder,
-                {
-                    let builder = #update_builder::new(self.pool.clone());
-                    f(builder)
-                }
-                pub fn upsert<F>(&self, f: F) -> #upsert_builder
-                where
-                    F: FnOnce(#upsert_builder) -> #upsert_builder,
-                {
-                    let builder = #upsert_builder::new(self.pool.clone());
-                    f(builder)
-                }
-                pub fn create<F>(&self, f: F) -> #create_builder
-                where
-                    F: FnOnce(#create_builder) -> #create_builder,
-                {
-                    let builder = #create_builder::new(self.pool.clone());
-                    f(builder)
-                }
-                pub fn delete<F>(&self, f: F) -> #delete_builder
-                where
-                    F: FnOnce(#delete_builder) -> #delete_builder,
-                {
-                    let builder = #delete_builder::new(self.pool.clone());
-                    f(builder)
-                }
-                pub async fn create_many(&self, records: Vec<std::collections::HashMap<&'static str, Box<dyn tokio_postgres::types::ToSql + Sync + Send>>>)
-                    -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
-                {
-                    if records.is_empty() {
-                        return Ok(0);
-                    }
-
-                    let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-
-                    let first = &records[0];
-                    let mut columns: Vec<&str> = first.keys().copied().collect();
-                    columns.sort();
-                    let columns_str = columns.join(", ");
-
-                    let mut all_values: Vec<String> = Vec::with_capacity(records.len());
-                    let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = Vec::new();
-                    let mut param_idx = 1;
-
-                    for record in records {
-                        let placeholders: Vec<String> = columns.iter().map(|_| {
-                            let p = format!("${}", param_idx);
-                            param_idx += 1;
-                            p
-                        }).collect();
-                        all_values.push(format!("({})", placeholders.join(", ")));
-                        for col in &columns {
-                            if let Some(val) = record.get(col) {
-                                all_params.push(unsafe { std::ptr::read(val) });
-                            }
-                        }
-                    }
-
-                    let sql = format!(
-                        "INSERT INTO {} ({}) VALUES {}",
-                        #table_name, columns_str, all_values.join(", ")
-                    );
-
-                    debug::log_query(&sql, all_params.len());
-
-                    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                        all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-                    let result = client.execute(&sql, &params[..]).await?;
-                    Ok(result)
-                }
-                #find_unique
-                #find_or_create
-                pub async fn get_client(&self) -> Result<PooledClient<'_>, tokio_postgres::Error> {
-                    self.pool.get().await
-                }
-                pub fn pool(&self) -> &ConnectionPool {
-                    &self.pool
-                }
-            }
-        }
-    });
+    let accessor_structs = schema
+        .models
+        .iter()
+        .map(|model| generate_accessor_for_model(model, jsonb_defaults));
 
     let accessor_inits = schema.models.iter().map(|model| {
         let accessor_name = format_ident!("{}", to_snake_case(&model.name));

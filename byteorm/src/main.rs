@@ -287,17 +287,23 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
 
     println!("Generating client in: {}", client_path.display());
 
-    fs::create_dir_all(client_path.join("src"))?;
+    fs::create_dir_all(client_path.join("src/models"))?;
 
     let cargo_toml = generate_client_cargo_toml();
     fs::write(client_path.join("Cargo.toml"), cargo_toml)?;
 
-    let lib_rs = rustgen::generate_rust_code(schema);
-    fs::write(client_path.join("src/lib.rs"), lib_rs)?;
+    let files = rustgen::generate_rust_code(schema);
+    for (rel_path, content) in files {
+        let full_path = client_path.join(rel_path);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&full_path, content)?;
 
-    let _ = std::process::Command::new("rustfmt")
-        .arg(client_path.join("src/lib.rs"))
-        .output();
+        let _ = std::process::Command::new("rustfmt")
+            .arg(full_path)
+            .output();
+    }
 
     println!("Client generated successfully.");
 

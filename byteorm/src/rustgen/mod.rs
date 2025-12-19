@@ -1,5 +1,6 @@
 use crate::Schema;
-use quote::quote;
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
 use std::collections::HashMap;
 use std::fs;
 
@@ -25,7 +26,8 @@ pub use update::*;
 pub use upsert::*;
 pub use utils::*;
 
-pub fn generate_rust_code(schema: &Schema) -> String {
+pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
+    let mut files = HashMap::new();
     let mut jsonb_defaults = HashMap::new();
     for model in &schema.models {
         for field in &model.fields {
@@ -42,34 +44,95 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         }
     }
 
-    let structs_and_impls = schema
-        .models
-        .iter()
-        .map(|model| generate_model_with_query_builder(model));
-
-    let client_struct = generate_client_struct(schema, &jsonb_defaults);
-    let jsonb_ext = generate_jsonb_ext();
-
-    let enums = schema.enums.iter().map(|e| {
-        let name = term_ident(&e.name);
-        let variants = e.values.iter().map(|v| {
-            let v_ident = term_ident(v);
-            quote! { #v_ident }
-        });
-        quote! {
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-            #[allow(non_camel_case_types)] 
-            pub enum #name {
-                #(#variants),*
+    // Generate Enums
+    let enums_code = if !schema.enums.is_empty() {
+        let enums = schema.enums.iter().map(|e| {
+            let name = term_ident(&e.name);
+            let variants = e.values.iter().map(|v| {
+                let v_ident = term_ident(v);
+                quote! { #v_ident }
+            });
+            quote! {
+                #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+                #[allow(non_camel_case_types)]
+                pub enum #name {
+                    #(#variants),*
+                }
             }
-        }
-    });
+        });
+        let code = quote! {
+            use serde::{Deserialize, Serialize};
+            #(#enums)*
+        };
+        pretty_print(&code)
+    } else {
+        String::new()
+    };
+    files.insert("src/enums.rs".to_string(), enums_code);
 
-    fn term_ident(s: &str) -> proc_macro2::Ident {
-       quote::format_ident!("{}", s)
+    // Generate Models
+    let mut model_mods = Vec::new();
+    for model in &schema.models {
+        let model_name_snake_str = to_snake_case(&model.name);
+        let model_name_snake = format_ident!("{}", model_name_snake_str);
+        model_mods.push(quote! {
+            pub mod #model_name_snake;
+            pub use #model_name_snake::*;
+        });
+
+        let model_code = generate_model_with_query_builder(model);
+        let accessor_code = generate_accessor_for_model(model, &jsonb_defaults);
+
+        let full_model_code = quote! {
+            use serde::{Deserialize, Serialize};
+            use chrono::{DateTime, Utc};
+            use std::sync::Arc;
+            use std::collections::HashMap;
+            use once_cell::sync::Lazy;
+            use std::pin::Pin;
+            use std::task::{Context, Poll};
+            use crate::{ByteOrmError, ConnectionPool, PooledClient, debug, expect_keys, JsonbExt};
+            use crate::enums::*;
+
+            #model_code
+            #accessor_code
+        };
+
+        files.insert(
+            format!("src/models/{}.rs", model_name_snake_str),
+            pretty_print(&full_model_code),
+        );
     }
 
-    let code = quote! {
+    let models_mod_code = quote! {
+        #(#model_mods)*
+    };
+    files.insert("src/models/mod.rs".to_string(), pretty_print(&models_mod_code));
+
+    // Generate lib.rs
+    let model_accessors = schema.models.iter().map(|model| {
+        let accessor_name = format_ident!("{}", to_snake_case(&model.name));
+        let model_name_snake = format_ident!("{}", to_snake_case(&model.name));
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+        quote! { pub #accessor_name: models::#model_name_snake::#accessor_struct }
+    });
+
+    let accessor_inits = schema.models.iter().map(|model| {
+        let accessor_name = format_ident!("{}", to_snake_case(&model.name));
+        let model_name_snake = format_ident!("{}", to_snake_case(&model.name));
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+        quote! { #accessor_name: models::#model_name_snake::#accessor_struct::new(pool.clone()) }
+    });
+
+    let debug_accessor_fields = schema.models.iter().map(|model| {
+        let accessor_name = to_snake_case(&model.name);
+        let accessor_name_ident = format_ident!("{}", accessor_name);
+        quote! { .field(#accessor_name, &self.#accessor_name_ident) }
+    });
+
+    let jsonb_ext = generate_jsonb_ext();
+
+    let lib_code = quote! {
         use serde::{Deserialize, Serialize};
         use chrono::{DateTime, Utc};
         use tokio_postgres::{Client as PgClient, NoTls, Error};
@@ -79,6 +142,11 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         use futures_util::task::Context;
         use std::pin::Pin;
         use futures_util::task::Poll;
+
+        pub mod enums;
+        pub mod models;
+        pub use models::*;
+        pub use enums::*;
 
         #[derive(Debug)]
         pub enum ByteOrmError {
@@ -171,11 +239,194 @@ pub fn generate_rust_code(schema: &Schema) -> String {
         }
 
         #jsonb_ext
-        #(#enums)*
-        #client_struct
-        #(#structs_and_impls)*
+
+        /// Enum to support both TLS and NoTLS connection pools
+        #[derive(Clone)]
+        pub enum ConnectionPool {
+            Tls(Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>),
+            NoTls(Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>),
+        }
+
+        impl ConnectionPool {
+            pub async fn get(&self) -> Result<PooledClient, tokio_postgres::Error> {
+                match self {
+                    ConnectionPool::Tls(pool) => {
+                        let conn = pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())?;
+                        Ok(PooledClient::Tls(conn))
+                    }
+                    ConnectionPool::NoTls(pool) => {
+                        let conn = pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())?;
+                        Ok(PooledClient::NoTls(conn))
+                    }
+                }
+            }
+        }
+
+        /// Wrapper for pooled connections that works with both TLS and NoTLS
+        pub enum PooledClient<'a> {
+            Tls(bb8::PooledConnection<'a, bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>),
+            NoTls(bb8::PooledConnection<'a, bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>),
+        }
+
+        impl<'a> PooledClient<'a> {
+            pub async fn query(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, tokio_postgres::Error> {
+                match self {
+                    PooledClient::Tls(c) => c.query(sql, params).await,
+                    PooledClient::NoTls(c) => c.query(sql, params).await,
+                }
+            }
+
+            pub async fn query_one(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<tokio_postgres::Row, tokio_postgres::Error> {
+                match self {
+                    PooledClient::Tls(c) => c.query_one(sql, params).await,
+                    PooledClient::NoTls(c) => c.query_one(sql, params).await,
+                }
+            }
+
+            pub async fn query_opt(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
+                match self {
+                    PooledClient::Tls(c) => c.query_opt(sql, params).await,
+                    PooledClient::NoTls(c) => c.query_opt(sql, params).await,
+                }
+            }
+
+            pub async fn execute(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, tokio_postgres::Error> {
+                match self {
+                    PooledClient::Tls(c) => c.execute(sql, params).await,
+                    PooledClient::NoTls(c) => c.execute(sql, params).await,
+                }
+            }
+        }
+
+        #[derive(Clone)]
+        pub struct Client {
+            pool: ConnectionPool,
+            #(#model_accessors),*
+        }
+        impl std::fmt::Debug for Client {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("Client")
+                    .field("pool", &"<ConnectionPool>")
+                    #(#debug_accessor_fields)*
+                    .finish()
+            }
+        }
+        impl Client {
+            pub async fn new(connection_string: &str) -> Result<Self, Error> {
+                // Detect if this is a localhost connection (no TLS needed)
+                let is_local = connection_string.contains("localhost") || connection_string.contains("127.0.0.1");
+                let requires_ssl = connection_string.contains("sslmode=require") || connection_string.contains("sslmode=verify");
+                
+                let pool = if is_local && !requires_ssl {
+                    // Use NoTls for localhost connections
+                    let manager = bb8_postgres::PostgresConnectionManager::new_from_stringlike(
+                        connection_string,
+                        tokio_postgres::NoTls,
+                    )?;
+                    let pool = bb8::Pool::builder()
+                        .max_size(20)
+                        .build(manager)
+                        .await?;
+                    ConnectionPool::NoTls(Arc::new(pool))
+                } else {
+                    // Use TLS for remote connections
+                    let root_store = rustls::RootCertStore {
+                        roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+                    };
+                    let tls_config = rustls::ClientConfig::builder()
+                        .with_root_certificates(root_store)
+                        .with_no_client_auth();
+                    let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+                    let manager = bb8_postgres::PostgresConnectionManager::new_from_stringlike(
+                        connection_string,
+                        tls,
+                    )?;
+                    let pool = bb8::Pool::builder()
+                        .max_size(20)
+                        .build(manager)
+                        .await?;
+                    ConnectionPool::Tls(Arc::new(pool))
+                };
+                
+                Ok(Self {
+                    pool: pool.clone(),
+                    #(#accessor_inits),*
+                })
+            }
+
+            pub async fn get_client(&self) -> Result<PooledClient<'_>, Error> {
+                self.pool.get().await
+            }
+
+            pub fn pool(&self) -> &ConnectionPool { &self.pool }
+
+            pub async fn transaction<F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: FnOnce(Transaction<'_>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send + '_>> + Send,
+                E: From<tokio_postgres::Error> + Send,
+                T: Send,
+            {
+                let client = self.pool.get().await.map_err(|e| E::from(e))?;
+                match client {
+                    PooledClient::Tls(mut c) => {
+                        let tx = c.transaction().await?;
+                        let transaction = Transaction { inner: tx };
+                        let result = f(transaction).await;
+                        result
+                    }
+                    PooledClient::NoTls(mut c) => {
+                        let tx = c.transaction().await?;
+                        let transaction = Transaction { inner: tx };
+                        let result = f(transaction).await;
+                        result
+                    }
+                }
+            }
+
+            pub async fn execute_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, Error> {
+                let client = self.pool.get().await?;
+                client.execute(sql, params).await
+            }
+
+            pub async fn query_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, Error> {
+                let client = self.pool.get().await?;
+                client.query(sql, params).await
+            }
+        }
+
+        pub struct Transaction<'a> {
+            inner: tokio_postgres::Transaction<'a>,
+        }
+
+        impl<'a> Transaction<'a> {
+            pub async fn execute(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, Error> {
+                self.inner.execute(sql, params).await
+            }
+
+            pub async fn query(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, Error> {
+                self.inner.query(sql, params).await
+            }
+
+            pub async fn commit(self) -> Result<(), Error> {
+                self.inner.commit().await
+            }
+
+            pub async fn rollback(self) -> Result<(), Error> {
+                self.inner.rollback().await
+            }
+        }
     };
 
+    files.insert("src/lib.rs".to_string(), pretty_print(&lib_code));
+
+    files
+}
+
+fn term_ident(s: &str) -> proc_macro2::Ident {
+    quote::format_ident!("{}", s)
+}
+
+fn pretty_print(code: &TokenStream) -> String {
     match syn::parse2::<syn::File>(code.clone()) {
         Ok(file) => prettyplease::unparse(&file),
         Err(e) => {
