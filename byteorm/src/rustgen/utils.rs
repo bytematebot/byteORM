@@ -115,6 +115,9 @@ pub fn generate_jsonb_sub_accessors(
         let jsonb_field_ident = format_ident!("{}", jsonb_name);
         let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(jsonb_name));
         let defaults_const = format_ident!("{}_DEFAULTS", jsonb_snake.to_uppercase());
+        
+        // Check if the JsonB field is nullable
+        let is_nullable = jsonb.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
 
         let default_json_init = if let Some(json_content) = jsonb_defaults.get(&(model.name.clone(), jsonb.name.clone())) {
             quote! {
@@ -133,8 +136,8 @@ pub fn generate_jsonb_sub_accessors(
 
         let (pk_params, pk_where_methods, pk_args_for_set) = if pk_fields.len() == 1 {
             let pk = &pk_fields[0];
-            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+            let is_pk_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            let pk_type = rust_type_from_schema(&pk.type_name, is_pk_nullable);
             let pk_field_name = format_ident!("where_{}", to_snake_case(&pk.name));
             (
                 quote! { id: #pk_type },
@@ -144,8 +147,8 @@ pub fn generate_jsonb_sub_accessors(
         } else {
             let params = pk_fields.iter().map(|pk| {
                 let param_name = format_ident!("{}", to_snake_case(&pk.name));
-                let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-                let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+                let is_pk_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+                let pk_type = rust_type_from_schema(&pk.type_name, is_pk_nullable);
                 quote! { #param_name: #pk_type }
             });
 
@@ -169,8 +172,8 @@ pub fn generate_jsonb_sub_accessors(
 
         let (pk_field_type, pk_field_ident, pk_field_name_in) = if pk_fields.len() == 1 {
             let pk = &pk_fields[0];
-            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-            let pk_type = rust_type_from_schema(&pk.type_name, is_nullable);
+            let is_pk_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            let pk_type = rust_type_from_schema(&pk.type_name, is_pk_nullable);
             let pk_ident = format_ident!("{}", to_snake_case(&pk.name));
             let pk_method_in = format_ident!("where_{}_in", to_snake_case(&pk.name));
             (pk_type, pk_ident, pk_method_in)
@@ -194,6 +197,145 @@ pub fn generate_jsonb_sub_accessors(
         let conflict_clause = pk_columns.join(", ");
         let key_placeholder = format!("${}", pk_columns.len() + 1);
         let value_placeholder = format!("${}", pk_columns.len() + 2);
+
+        // Generate different accessor code based on whether JsonB is nullable
+        let get_all_body = if is_nullable {
+            quote! {
+                Ok(Some(record)) => Ok(record.#jsonb_field_ident.clone().unwrap_or_else(|| #defaults_const.clone())),
+            }
+        } else {
+            quote! {
+                Ok(Some(record)) => Ok(record.#jsonb_field_ident.clone()),
+            }
+        };
+
+        let get_body = if is_nullable {
+            quote! {
+                Ok(Some(record)) => {
+                    if let Some(ref jsonb_val) = record.#jsonb_field_ident {
+                        jsonb_val.get_string(key)
+                            .or_else(|_| #defaults_const.get_string(key))
+                    } else {
+                        #defaults_const.get_string(key)
+                    }
+                },
+            }
+        } else {
+            quote! {
+                Ok(Some(record)) => {
+                    record.#jsonb_field_ident.get_string(key)
+                        .or_else(|_| #defaults_const.get_string(key))
+                },
+            }
+        };
+
+        let get_as_body = if is_nullable {
+            quote! {
+                Ok(Some(record)) => {
+                    if let Some(ref jsonb_val) = record.#jsonb_field_ident {
+                        jsonb_val.get_value(key)
+                            .or_else(|_| #defaults_const.get_value(key))
+                    } else {
+                        #defaults_const.get_value(key)
+                    }
+                },
+            }
+        } else {
+            quote! {
+                Ok(Some(record)) => {
+                    record.#jsonb_field_ident.get_value(key)
+                        .or_else(|_| #defaults_const.get_value(key))
+                },
+            }
+        };
+
+        let has_body = if is_nullable {
+            quote! {
+                Ok(Some(record)) => {
+                    if let Some(ref jsonb_val) = record.#jsonb_field_ident {
+                        Ok(jsonb_val.has_key(key) || #defaults_const.has_key(key))
+                    } else {
+                        Ok(#defaults_const.has_key(key))
+                    }
+                },
+            }
+        } else {
+            quote! {
+                Ok(Some(record)) => Ok(record.#jsonb_field_ident.has_key(key) || #defaults_const.has_key(key)),
+            }
+        };
+
+        let get_many_for_loop = if is_nullable {
+            quote! {
+                if let Some(record) = opt {
+                    if let Some(ref jsonb_val) = record.#jsonb_field_ident {
+                        for &key in keys {
+                            if let Some(v) = jsonb_val.get(key) {
+                                out.insert(key.to_string(), v.clone());
+                            } else if let Some(v) = #defaults_const.get(key) {
+                                out.insert(key.to_string(), v.clone());
+                            }
+                        }
+                    } else {
+                        for &key in keys {
+                            if let Some(v) = #defaults_const.get(key) {
+                                out.insert(key.to_string(), v.clone());
+                            }
+                        }
+                    }
+                } else {
+                    for &key in keys {
+                        if let Some(v) = #defaults_const.get(key) {
+                            out.insert(key.to_string(), v.clone());
+                        }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                if let Some(record) = opt {
+                    for &key in keys {
+                        if let Some(v) = record.#jsonb_field_ident.get(key) {
+                            out.insert(key.to_string(), v.clone());
+                        } else if let Some(v) = #defaults_const.get(key) {
+                            out.insert(key.to_string(), v.clone());
+                        }
+                    }
+                } else {
+                    for &key in keys {
+                        if let Some(v) = #defaults_const.get(key) {
+                            out.insert(key.to_string(), v.clone());
+                        }
+                    }
+                }
+            }
+        };
+
+        let get_many_ids_for_loop = if is_nullable {
+            quote! {
+                for record in records {
+                    if let Some(ref jsonb_val) = record.#jsonb_field_ident {
+                        if let Ok(value) = jsonb_val.get_value::<T>(key) {
+                            map.insert(record.#pk_field_ident, value);
+                        } else if let Ok(value) = #defaults_const.get_value::<T>(key) {
+                            map.insert(record.#pk_field_ident, value);
+                        }
+                    } else if let Ok(value) = #defaults_const.get_value::<T>(key) {
+                        map.insert(record.#pk_field_ident, value);
+                    }
+                }
+            }
+        } else {
+            quote! {
+                for record in records {
+                    if let Ok(value) = record.#jsonb_field_ident.get_value::<T>(key) {
+                        map.insert(record.#pk_field_ident, value);
+                    } else if let Ok(value) = #defaults_const.get_value::<T>(key) {
+                        map.insert(record.#pk_field_ident, value);
+                    }
+                }
+            }
+        };
 
         quote! {
             #default_json_init
@@ -227,7 +369,7 @@ pub fn generate_jsonb_sub_accessors(
                         .first()
                         .await
                     {
-                        Ok(Some(record)) => Ok(record.#jsonb_field_ident.clone()),
+                        #get_all_body
                         Ok(None) => Ok(#defaults_const.clone()),
                         Err(e) => Err(e),
                     }
@@ -253,10 +395,7 @@ pub fn generate_jsonb_sub_accessors(
                         .first()
                         .await
                     {
-                        Ok(Some(record)) => {
-                            record.#jsonb_field_ident.get_string(key)
-                                .or_else(|_| #defaults_const.get_string(key))
-                        },
+                        #get_body
                         Ok(None) => #defaults_const.get_string(key),
                         Err(e) => Err(e),
                     }
@@ -275,10 +414,7 @@ pub fn generate_jsonb_sub_accessors(
                         .first()
                         .await
                     {
-                        Ok(Some(record)) => {
-                            record.#jsonb_field_ident.get_value(key)
-                                .or_else(|_| #defaults_const.get_value(key))
-                        },
+                        #get_as_body
                         Ok(None) => #defaults_const.get_value(key),
                         Err(e) => Err(e),
                     }
@@ -306,7 +442,7 @@ pub fn generate_jsonb_sub_accessors(
                         .first()
                         .await
                     {
-                        Ok(Some(record)) => Ok(record.#jsonb_field_ident.has_key(key) || #defaults_const.has_key(key)),
+                        #has_body
                         Ok(None) => Ok(#defaults_const.has_key(key)),
                         Err(e) => Err(e),
                     }
@@ -365,21 +501,7 @@ pub fn generate_jsonb_sub_accessors(
 
                     let mut out = HashMap::new();
 
-                    if let Some(record) = opt {
-                        for &key in keys {
-                            if let Some(v) = record.#jsonb_field_ident.get(key) {
-                                out.insert(key.to_string(), v.clone());
-                            } else if let Some(v) = #defaults_const.get(key) {
-                                out.insert(key.to_string(), v.clone());
-                            }
-                        }
-                    } else {
-                        for &key in keys {
-                            if let Some(v) = #defaults_const.get(key) {
-                                out.insert(key.to_string(), v.clone());
-                            }
-                        }
-                    }
+                    #get_many_for_loop
                     Ok(out)
                 }
 
@@ -415,19 +537,14 @@ pub fn generate_jsonb_sub_accessors(
                         .await?;
 
                     let mut map = HashMap::new();
-                    for record in records {
-                        if let Ok(value) = record.#jsonb_field_ident.get_value::<T>(key) {
-                            map.insert(record.#pk_field_ident, value);
-                        } else if let Ok(value) = #defaults_const.get_value::<T>(key) {
-                            map.insert(record.#pk_field_ident, value);
-                        }
-                    }
+                    #get_many_ids_for_loop
                     Ok(map)
                 }
             }
         }
     }).collect()
 }
+
 
 pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> + '_ {
     model.fields.iter().map(|field| {
