@@ -10,6 +10,7 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         "String" => quote! { String },
         "JsonB" => quote! { serde_json::Value },
         "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
+        "Date" => quote! { NaiveDate },
         "Boolean" => quote! { bool },
         "Float" => quote! { f64 },
         "Serial" => quote! { i32 },
@@ -562,7 +563,7 @@ pub fn is_builtin_type(ty: &str) -> bool {
     matches!(
         ty,
         "BigInt" | "Int" | "String" | "JsonB" | "TimestamptZ" | "Timestamp" 
-        | "Boolean" | "Float" | "Serial" | "Real" | "Text"
+        | "Boolean" | "Float" | "Serial" | "Real" | "Text" | "Date"
     )
 }
 

@@ -85,7 +85,7 @@ pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
 
         let full_model_code = quote! {
             use serde::{Deserialize, Serialize};
-            use chrono::{DateTime, Utc};
+            use chrono::{DateTime, NaiveDate, Utc};
             use std::sync::Arc;
             use std::collections::HashMap;
             use once_cell::sync::Lazy;
