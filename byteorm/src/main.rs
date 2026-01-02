@@ -26,6 +26,8 @@ enum Commands {
     },
     /// Update ByteORM to the latest version from GitHub
     SelfUpdate,
+    /// Generate byteorm-client crate from schema without DB connection
+    Generate,
 }
 
 #[tokio::main]
@@ -214,6 +216,29 @@ async fn main() {
                 return;
             }
             println!("✅ ByteORM updated successfully!");
+        }
+        Some(Commands::Generate) => {
+            println!("🔍 Generating client code...");
+            let schema_files = discover_schema_files();
+
+            if schema_files.is_empty() {
+                eprintln!("No schema files found!");
+                return;
+            }
+
+            let schema = match load_and_merge_schemas(&schema_files) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error loading schemas: {}", e);
+                    return;
+                }
+            };
+
+            if let Err(e) = generate_client_package(&schema) {
+                eprintln!("Error generating client: {}", e);
+                return;
+            }
+            println!("✅ byteorm-client generated successfully!");
         }
         None => {
             println!("ByteORM CLI v0.1.0");
