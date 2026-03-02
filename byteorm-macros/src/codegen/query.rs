@@ -1,5 +1,5 @@
-use crate::rustgen::{generate_select_columns, rust_type_from_schema, to_snake_case};
-use crate::{Model, Modifier};
+use crate::codegen::utils::*;
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 

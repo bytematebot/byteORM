@@ -1,8 +1,8 @@
-use crate::rustgen::{
+use crate::codegen::utils::{
     generate_inc_methods, generate_select_columns, generate_set_methods, generate_where_methods,
     is_numeric_type, rust_type_from_schema, to_snake_case, is_builtin_type,
 };
-use crate::{Model, Modifier};
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 

@@ -65,7 +65,7 @@ impl Field {
     }
 
     pub fn get_jsonb_default_path(&self) -> Option<String> {
-        if self.type_name == "JsonB" && self.is_jsonb_default_file() {
+        if (self.type_name == "JsonB" || self.type_name == "Jsonb") && self.is_jsonb_default_file() {
             self.get_default_value()
         } else {
             None

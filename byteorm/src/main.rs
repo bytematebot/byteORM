@@ -336,26 +336,48 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
 }
 
 fn generate_client_cargo_toml() -> String {
-    r#"[package]
+    let macros_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+        .and_then(|dir| {
+            let candidates = [
+                dir.join("../../byteorm-macros"),
+                dir.join("../byteorm-macros"),
+            ];
+            candidates.into_iter().find(|p| p.exists())
+        })
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .map(|p| {
+            let s = p.display().to_string().replace('\\', "/");
+            s.strip_prefix("//?/").unwrap_or(&s).to_string()
+        });
+
+    let macros_dep = if let Some(path) = macros_path {
+        format!(r#"byteorm-macros = {{ path = "{}" }}"#, path)
+    } else {
+        r#"byteorm-macros = { path = "../byteorm-macros" }"#.to_string()
+    };
+
+    format!(r#"[package]
 name = "byteorm-client"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = { version = "1.0.228", features = ["derive"]}
+{macros_dep}
+serde = {{ version = "1.0.228", features = ["derive"]}}
 serde_json = "1.0.145"
-chrono = { version = "0.4.42", features = ["serde"]}
-tokio = { version = "1.48.0", features = ["full"]}
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+chrono = {{ version = "0.4.42", features = ["serde"]}}
+tokio = {{ version = "1.48.0", features = ["full"]}}
+tokio-postgres = {{ version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }}
 tokio-postgres-rustls = "0.13"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = {{ version = "0.23", default-features = false, features = ["ring", "std"] }}
 webpki-roots = "0.26"
 bb8 = "0.8"
 bb8-postgres = "0.8"
 once_cell = "1.21.3"
 futures-util = "0.3.31"
-"#
-    .to_string()
+"#)
 }
 
 async fn self_update() -> Result<(), Box<dyn std::error::Error>> {

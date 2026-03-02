@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "byteorm",
+    "byteorm-macros",
 ]
 exclude = [
     "examples/generated",

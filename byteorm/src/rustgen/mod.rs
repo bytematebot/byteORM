@@ -80,27 +80,11 @@ pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
             pub use #model_name_snake::*;
         });
 
-        let model_code = generate_model_with_query_builder(model);
-        let accessor_code = generate_accessor_for_model(model, &jsonb_defaults);
-
-        let full_model_code = quote! {
-            use serde::{Deserialize, Serialize};
-            use chrono::{DateTime, NaiveDate, Utc};
-            use std::sync::Arc;
-            use std::collections::HashMap;
-            use once_cell::sync::Lazy;
-            use std::pin::Pin;
-            use std::task::{Context, Poll};
-            use crate::{ByteOrmError, ConnectionPool, PooledClient, debug, expect_keys, JsonbExt};
-            use crate::enums::*;
-
-            #model_code
-            #accessor_code
-        };
+        let model_code = generate_derive_model(model, &jsonb_defaults);
 
         files.insert(
             format!("src/models/{}.rs", model_name_snake_str),
-            pretty_print(&full_model_code),
+            pretty_print(&model_code),
         );
     }
 
@@ -147,6 +131,10 @@ pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
         pub mod models;
         pub use models::*;
         pub use enums::*;
+
+        pub trait FromRow {
+            fn from_row(row: &tokio_postgres::Row) -> Self;
+        }
 
         #[derive(Debug)]
         pub enum ByteOrmError {
@@ -433,6 +421,91 @@ fn pretty_print(code: &TokenStream) -> String {
             eprintln!("ERROR parsing generated code: {}", e);
             eprintln!("Generated code:\n{}", code);
             panic!("Failed to parse generated Rust code");
+        }
+    }
+}
+
+fn generate_derive_model(
+    model: &crate::Model,
+    jsonb_defaults: &HashMap<(String, String), String>,
+) -> TokenStream {
+    use crate::Modifier;
+    let model_name = format_ident!("{}", model.name);
+    let table_name = model.name.to_lowercase();
+
+    let computed_attrs: Vec<_> = model.computed_fields.iter().map(|cf| {
+        let cf_name = &cf.name;
+        let cf_expr = &cf.expression;
+        quote! { #[byteorm(computed(name = #cf_name, expr = #cf_expr))] }
+    }).collect();
+
+    let fields: Vec<_> = model.fields.iter().map(|field| {
+        let field_name = format_ident!("{}", field.name);
+        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+
+        let mut attrs = Vec::new();
+
+        if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) {
+            attrs.push(quote! { #[byteorm(pk)] });
+        }
+        if field.modifiers.iter().any(|m| matches!(m, Modifier::Unique)) {
+            attrs.push(quote! { #[byteorm(unique)] });
+        }
+        if field.modifiers.iter().any(|m| matches!(m, Modifier::Index)) {
+            attrs.push(quote! { #[byteorm(index)] });
+        }
+        for m in &field.modifiers {
+            if let Modifier::ForeignKey { model: fk_model, field: fk_field, .. } = m {
+                if let Some(fk_f) = fk_field {
+                    attrs.push(quote! { #[byteorm(fk(model = #fk_model, field = #fk_f))] });
+                } else {
+                    attrs.push(quote! { #[byteorm(fk(model = #fk_model))] });
+                }
+            }
+        }
+        if !is_builtin_type(&field.type_name) {
+            let enum_name = &field.type_name;
+            attrs.push(quote! { #[byteorm(enum_type = #enum_name)] });
+        }
+        if let Some(path) = field.get_jsonb_default_path() {
+            if let Some(content) = jsonb_defaults.get(&(model.name.clone(), field.name.clone())) {
+                attrs.push(quote! { #[byteorm(jsonb_default = #content)] });
+            } else {
+                attrs.push(quote! { #[byteorm(jsonb_default = #path)] });
+            }
+        } else if field.type_name == "JsonB" || field.type_name == "Jsonb" {
+            if let Some(default_val) = field.get_default_value() {
+                attrs.push(quote! { #[byteorm(jsonb_default = #default_val)] });
+            }
+        }
+        if let Some(sql_default) = field.sql_default_literal() {
+            attrs.push(quote! { #[byteorm(sql_default = #sql_default)] });
+        }
+
+        quote! {
+            #(#attrs)*
+            pub #field_name: #field_type
+        }
+    }).collect();
+
+    quote! {
+        use serde::{Deserialize, Serialize};
+        use chrono::{DateTime, NaiveDate, Utc};
+        use std::sync::Arc;
+        use std::collections::HashMap;
+        use once_cell::sync::Lazy;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use crate::{ByteOrmError, ConnectionPool, FromRow, PooledClient, debug, expect_keys, JsonbExt};
+        use crate::enums::*;
+        use byteorm_macros::ByteOrm;
+
+        #[derive(ByteOrm, Debug, Clone, Serialize, Deserialize)]
+        #[byteorm(table = #table_name)]
+        #(#computed_attrs)*
+        pub struct #model_name {
+            #(#fields),*
         }
     }
 }

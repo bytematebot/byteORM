@@ -1,67 +1,14 @@
-use crate::rustgen::{
-    generate_create_builder, generate_delete_builder, generate_from_row_impl, generate_select_columns,
-    generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args,
-    rust_type_from_schema, to_snake_case,
-};
-use crate::{Model, Modifier};
+use crate::types::*;
+use crate::codegen::utils::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-pub fn generate_model_with_query_builder(model: &Model) -> TokenStream {
-    let model_struct = generate_model_struct(model);
-    let from_row_impl = generate_from_row_impl(model);
-    let query_builder_struct = generate_query_builder_struct(model);
-    let update_builder = generate_update_builder(model);
-    let upsert_builder = generate_upsert_builder(model);
-    let create_builder = generate_create_builder(model);
-    let delete_builder = generate_delete_builder(model);
-    let model_impl = generate_model_impl(model);
-
-    quote! {
-        #model_struct
-        #from_row_impl
-        #query_builder_struct
-        #update_builder
-        #upsert_builder
-        #create_builder
-        #delete_builder
-        #model_impl
-    }
-}
-
-pub fn generate_model_struct(model: &Model) -> TokenStream {
-    let name = format_ident!("{}", model.name);
-    let fields = model.fields.iter().map(|field| {
-        let field_name = format_ident!("{}", field.name);
-        let is_nullable = field
-            .modifiers
-            .iter()
-            .any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-
-        quote! {
-            pub #field_name: #field_type
-        }
-    });
-
-    quote! {
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        pub struct #name {
-            #(#fields),*
-        }
-    }
-}
-
-fn generate_model_impl(model: &Model) -> TokenStream {
+pub fn generate_model_impl(model: &Model) -> TokenStream {
     let model_name = format_ident!("{}", model.name);
     let pk_fields: Vec<_> = model
         .fields
         .iter()
-        .filter(|f| {
-            f.modifiers
-                .iter()
-                .any(|m| matches!(m, Modifier::PrimaryKey))
-        })
+        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
         .collect();
 
     let select_columns = generate_select_columns(model);

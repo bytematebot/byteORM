@@ -1,131 +1,33 @@
-use crate::Modifier;
+use crate::types::*;
+use crate::codegen::utils::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use std::collections::HashMap;
 
-pub fn generate_from_row_impl(model: &crate::Model) -> TokenStream {
-    let model_name = format_ident!("{}", model.name);
-    let field_gets = model.fields.iter().map(|field| {
-        let field_name = format_ident!("{}", field.name);
-        let col_name = to_snake_case(&field.name);
-        quote! { #field_name: row.get(#col_name) }
-    });
-    quote! {
-        impl crate::FromRow for #model_name {
-            fn from_row(row: &tokio_postgres::Row) -> Self {
-                Self {
-                    #(#field_gets),*
-                }
-            }
-        }
-    }
-}
-
-pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
-    let base_type = match type_name {
-        "BigInt" => quote! { i64 },
-        "Int" => quote! { i32 },
-        "String" => quote! { String },
-        "JsonB" | "Jsonb" => quote! { serde_json::Value },
-        "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
-        "Date" => quote! { NaiveDate },
-        "Boolean" => quote! { bool },
-        "Float" => quote! { f64 },
-        "Serial" => quote! { i32 },
-        "Real" => quote! { f32 },
-        _ => quote! { String },
-    };
-
-    if nullable {
-        quote! { Option<#base_type> }
-    } else {
-        base_type
-    }
-}
-
-pub fn to_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            result.push('_');
-        }
-        result.push(ch.to_lowercase().next().unwrap_or(ch));
-    }
-    result
-}
-
-pub fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-    }
-}
-
-pub fn pk_args(
-    model: &crate::Model,
-) -> (
-    Vec<proc_macro2::Ident>,
-    Vec<proc_macro2::TokenStream>,
-    Vec<String>,
-    Vec<String>,
-    Vec<proc_macro2::TokenStream>,
-) {
-    let pk_fields: Vec<_> = model
-        .fields
-        .iter()
-        .filter(|f| {
-            f.modifiers
-                .iter()
-                .any(|m| matches!(m, Modifier::PrimaryKey))
+pub fn generate_jsonb_accessor_fields(model: &Model) -> Vec<(proc_macro2::Ident, proc_macro2::Ident)> {
+    model.fields.iter()
+        .filter(|f| (f.type_name == "JsonB" || f.type_name == "Jsonb")
+            && f.attributes.iter().any(|a| a.name == "jsonb_default"))
+        .map(|f| {
+            let field_name = format_ident!("{}", to_snake_case(&f.name));
+            let struct_name = format_ident!("{}{}Accessor", model.name, capitalize_first(&f.name));
+            (field_name, struct_name)
         })
-        .collect();
-    let pk_names = pk_fields
-        .iter()
-        .map(|pk| format_ident!("{}", to_snake_case(&pk.name)))
-        .collect();
-    let pk_types = pk_fields
-        .iter()
-        .map(|pk| {
-            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-            rust_type_from_schema(&pk.type_name, is_nullable)
-        })
-        .collect();
-    let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
-    let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
-    let pk_arg_refs = pk_fields
-        .iter()
-        .map(|pk| {
-            let name = format_ident!("{}", to_snake_case(&pk.name));
-            quote! { &#name }
-        })
-        .collect();
-    (pk_names, pk_types, pk_cols, pk_placeholders, pk_arg_refs)
+        .collect()
 }
 
-pub fn generate_jsonb_sub_accessors(
-    model: &crate::Model,
-    jsonb_defaults: &HashMap<(String, String), String>,
-) -> Vec<TokenStream> {
-    let model_name = &model.name;
+pub fn generate_jsonb_sub_accessors(model: &Model) -> Vec<TokenStream> {
+    let model_name_str = &model.name;
     let query_builder = format_ident!("{}Query", model.name);
     let where_builder_name = format_ident!("{}WhereBuilder", model.name);
-    let table_name = model.name.to_lowercase();
+    let table_name = &model.table_name;
 
-    let pk_fields: Vec<_> = model
-        .fields
-        .iter()
-        .filter(|f| {
-            f.modifiers
-                .iter()
-                .any(|m| matches!(m, Modifier::PrimaryKey))
-        })
+    let pk_fields: Vec<_> = model.fields.iter()
+        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
         .collect();
 
-    let jsonb_fields: Vec<_> = model
-        .fields
-        .iter()
-        .filter(|f| f.type_name == "JsonB" || f.type_name == "Jsonb")
+    let jsonb_fields: Vec<_> = model.fields.iter()
+        .filter(|f| (f.type_name == "JsonB" || f.type_name == "Jsonb")
+            && f.attributes.iter().any(|a| a.name == "jsonb_default"))
         .collect();
 
     jsonb_fields.into_iter().map(|jsonb| {
@@ -134,15 +36,18 @@ pub fn generate_jsonb_sub_accessors(
         let jsonb_field_ident = format_ident!("{}", jsonb_name);
         let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(jsonb_name));
         let defaults_const = format_ident!("{}_DEFAULTS", jsonb_snake.to_uppercase());
-        
-        // Check if the JsonB field is nullable
+
         let is_nullable = jsonb.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
 
-        let default_json_init = if let Some(json_content) = jsonb_defaults.get(&(model.name.clone(), jsonb.name.clone())) {
+        let json_content = jsonb.attributes.iter()
+            .find(|a| a.name == "jsonb_default")
+            .and_then(|a| a.args.as_ref());
+
+        let default_json_init = if let Some(content) = json_content {
             quote! {
                 static #defaults_const: Lazy<serde_json::Value> = Lazy::new(|| {
-                    serde_json::from_str(#json_content)
-                        .expect(&format!("Failed to parse default JSON for {}.{}", stringify!(#model_name), #jsonb_name))
+                    serde_json::from_str(#content)
+                        .expect(&format!("Failed to parse default JSON for {}.{}", #model_name_str, #jsonb_name))
                 });
             }
         } else {
@@ -170,18 +75,15 @@ pub fn generate_jsonb_sub_accessors(
                 let pk_type = rust_type_from_schema(&pk.type_name, is_pk_nullable);
                 quote! { #param_name: #pk_type }
             });
-
             let where_methods = pk_fields.iter().map(|pk| {
                 let method_name = format_ident!("where_{}", to_snake_case(&pk.name));
                 let param_name = format_ident!("{}", to_snake_case(&pk.name));
                 quote! { .#method_name(#param_name) }
             });
-
             let set_args = pk_fields.iter().map(|pk| {
                 let param_name = format_ident!("{}", to_snake_case(&pk.name));
                 quote! { &#param_name }
             });
-
             (
                 quote! { #(#params),* },
                 quote! { #(#where_methods)* },
@@ -217,7 +119,6 @@ pub fn generate_jsonb_sub_accessors(
         let key_placeholder = format!("${}", pk_columns.len() + 1);
         let value_placeholder = format!("${}", pk_columns.len() + 2);
 
-        // Generate different accessor code based on whether JsonB is nullable
         let get_all_body = if is_nullable {
             quote! {
                 Ok(Some(record)) => Ok(record.#jsonb_field_ident.clone().unwrap_or_else(|| #defaults_const.clone())),
@@ -562,261 +463,4 @@ pub fn generate_jsonb_sub_accessors(
             }
         }
     }).collect()
-}
-
-
-pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> + '_ {
-    model.fields.iter().map(|field| {
-        let field_name = format_ident!("{}", field.name);
-        let col_name = to_snake_case(&field.name);
-        quote! { #field_name: row.get(#col_name) }
-    })
-}
-
-pub fn is_numeric_type(ty: &str) -> bool {
-    matches!(ty, "BigInt" | "Int" | "Serial" | "Float" | "Real")
-}
-
-pub fn is_builtin_type(ty: &str) -> bool {
-    matches!(
-        ty,
-        "BigInt" | "Int" | "String" | "JsonB" | "Jsonb" | "TimestamptZ" | "Timestamp" 
-        | "Boolean" | "Float" | "Serial" | "Real" | "Text" | "Date"
-    )
-}
-
-pub fn generate_select_columns(model: &crate::Model) -> String {
-    model.fields.iter().map(|field| {
-        let col_name = to_snake_case(&field.name);
-        if is_builtin_type(&field.type_name) {
-            col_name
-        } else {
-            format!("CAST({} AS TEXT) as {}", col_name, col_name)
-        }
-    }).collect::<Vec<_>>().join(", ")
-}
-
-pub fn generate_inc_methods(
-    model: &crate::Model,
-    target_ops: &str,
-    target_values: Option<&str>,
-) -> impl Iterator<Item = TokenStream> {
-    model
-        .fields
-        .iter()
-        .filter(|f| is_numeric_type(&f.type_name))
-        .map(move |field| {
-            let field_col = to_snake_case(&field.name);
-            let inc_method = format_ident!("inc_{}", field_col);
-            let dec_method = format_ident!("dec_{}", field_col);
-            let mul_method = format_ident!("mul_{}", field_col);
-            let div_method = format_ident!("div_{}", field_col);
-            let ops_ident = format_ident!("{}", target_ops);
-            let values_ident = target_values.map(|v| format_ident!("{}", v));
-
-            let inc_body = if let Some(values) = &values_ident {
-                quote! {
-                    self.#ops_ident.insert(#field_col, ("inc", amount));
-                    self.#values.insert(#field_col, Box::new(amount));
-                }
-            } else {
-                quote! {
-                    self.#ops_ident.push((#field_col, "inc", amount));
-                }
-            };
-
-            let dec_body = if let Some(values) = &values_ident {
-                quote! {
-                    self.#ops_ident.insert(#field_col, ("dec", amount));
-                    self.#values.insert(#field_col, Box::new(-amount));
-                }
-            } else {
-                quote! {
-                    self.#ops_ident.push((#field_col, "dec", amount));
-                }
-            };
-
-            let mul_body = if let Some(values) = &values_ident {
-                quote! {
-                    self.#ops_ident.insert(#field_col, ("mul", factor));
-                    self.#values.insert(#field_col, Box::new(0));
-                }
-            } else {
-                quote! {
-                    self.#ops_ident.push((#field_col, "mul", factor));
-                }
-            };
-
-            let div_body = if let Some(values) = &values_ident {
-                quote! {
-                    self.#ops_ident.insert(#field_col, ("div", divisor));
-                    self.#values.insert(#field_col, Box::new(0));
-                }
-            } else {
-                quote! {
-                    self.#ops_ident.push((#field_col, "div", divisor));
-                }
-            };
-
-            quote! {
-                pub fn #inc_method(mut self, amount: i64) -> Self {
-                    #inc_body
-                    self
-                }
-                pub fn #dec_method(mut self, amount: i64) -> Self {
-                    #dec_body
-                    self
-                }
-                pub fn #mul_method(mut self, factor: i64) -> Self {
-                    #mul_body
-                    self
-                }
-                pub fn #div_method(mut self, divisor: i64) -> Self {
-                    #div_body
-                    self
-                }
-            }
-        })
-}
-
-pub fn generate_where_methods(
-    model: &crate::Model,
-    target_args: &str,
-    target_fragments: &str,
-) -> impl Iterator<Item = TokenStream> {
-    model.fields.iter().flat_map(move |field| {
-        let method_name = format_ident!("where_{}", to_snake_case(&field.name));
-        let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-        let field_col = to_snake_case(&field.name);
-        let args_ident = format_ident!("{}", target_args);
-        let fragments_ident = format_ident!("{}", target_fragments);
-
-        let base_method = quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push((#field_col.to_string(), self.#args_ident.len()));
-                self
-            }
-        };
-
-        let in_method = quote! {
-            pub fn #method_in(mut self, values: Vec<#field_type>) -> Self {
-                if values.is_empty() {
-                    return self;
-                }
-                let start_idx = self.#args_ident.len() + 1;
-                let placeholders: Vec<String> = (start_idx..start_idx + values.len())
-                    .map(|i| format!("${}", i))
-                    .collect();
-                let in_clause = format!("{} IN ({})", #field_col, placeholders.join(", "));
-                for value in values {
-                    self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                }
-                self.#fragments_ident.push((in_clause, 0));
-                self
-            }
-        };
-
-        let null_methods = if is_nullable {
-            let method_is_null = format_ident!("where_{}_is_null", to_snake_case(&field.name));
-            let method_is_not_null = format_ident!("where_{}_is_not_null", to_snake_case(&field.name));
-            vec![
-                quote! {
-                    pub fn #method_is_null(mut self) -> Self {
-                        self.#fragments_ident.push((format!("{} IS NULL", #field_col), 0));
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_is_not_null(mut self) -> Self {
-                        self.#fragments_ident.push((format!("{} IS NOT NULL", #field_col), 0));
-                        self
-                    }
-                }
-            ]
-        } else {
-            vec![]
-        };
-
-        let mut methods = vec![base_method, in_method];
-        methods.extend(null_methods);
-
-        if field.type_name == "TimestamptZ" {
-            let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
-            let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
-            let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
-            let method_lte = format_ident!("where_{}_lte", to_snake_case(&field.name));
-
-            methods.extend(vec![
-                quote! {
-                    pub fn #method_gt(mut self, value: #field_type) -> Self {
-                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                        self.#fragments_ident.push((format!("{} >", #field_col), self.#args_ident.len()));
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_lt(mut self, value: #field_type) -> Self {
-                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Send + Sync>);
-                        self.#fragments_ident.push((format!("{} <", #field_col), self.#args_ident.len()));
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_gte(mut self, value: #field_type) -> Self {
-                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                        self.#fragments_ident.push((format!("{} >=", #field_col), self.#args_ident.len()));
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_lte(mut self, value: #field_type) -> Self {
-                        self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                        self.#fragments_ident.push((format!("{} <=", #field_col), self.#args_ident.len()));
-                        self
-                    }
-                }
-            ]);
-        }
-
-        methods.into_iter()
-    })
-}
-
-pub fn generate_set_methods(
-    model: &crate::Model,
-    use_hashmap: bool,
-    hashmap_field: &str,
-    vec_field: Option<&str>,
-    fragments_field: Option<&str>,
-) -> impl Iterator<Item = TokenStream> {
-    model.fields.iter().map(move |field| {
-        let method_name = format_ident!("set_{}", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
-        let field_col = to_snake_case(&field.name);
-
-        let body = if use_hashmap {
-            let hashmap_ident = format_ident!("{}", hashmap_field);
-            quote! {
-                self.#hashmap_ident.insert(#field_col, Box::new(value));
-            }
-        } else {
-            let vec_ident = format_ident!("{}", vec_field.unwrap());
-            let fragments_ident = format_ident!("{}", fragments_field.unwrap());
-            quote! {
-                self.#vec_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push(#field_col);
-            }
-        };
-
-        quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                #body
-                self
-            }
-        }
-    })
 }
