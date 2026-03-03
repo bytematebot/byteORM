@@ -66,7 +66,7 @@ pub mod snapshot {
 }
 
 pub mod diff {
-    use crate::{Field, Model, Modifier, Schema, Enum};
+    use crate::{Field, Model, ModelAttribute, Modifier, Schema, Enum};
     use std::collections::{HashMap, HashSet, VecDeque};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,10 @@ pub mod diff {
             new: Field,
         },
         RemoveTable(String),
+        AddModelAttribute {
+            table: String,
+            attr: ModelAttribute,
+        },
     }
 
     fn get_fk_dependencies(model: &Model) -> Vec<String> {
@@ -260,6 +264,15 @@ pub mod diff {
                                     new: curr_field.clone(),
                                 });
                             }
+                        }
+                    }
+
+                    for attr in &curr_model.model_attributes {
+                        if !prev_model.model_attributes.contains(attr) {
+                            changes.push(Change::AddModelAttribute {
+                                table: curr_model.name.clone(),
+                                attr: attr.clone(),
+                            });
                         }
                     }
                 } else {
@@ -444,6 +457,27 @@ pub mod codegen {
                             }
                         }
                     }
+                    if attr.name == "unique" {
+                        if let Some(args) = &attr.args {
+                            let table_name = model.name.to_lowercase();
+                            let args_content =
+                                args.trim_start_matches('(').trim_end_matches(')').trim();
+
+                            if args_content.starts_with('[') && args_content.ends_with(']') {
+                                let fields: Vec<&str> = args_content[1..args_content.len() - 1]
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .collect();
+                                let fields_str = fields.join("_");
+                                let constraint_name = format!("uq_{}_{}", table_name, fields_str);
+                                let fields_sql = fields.join(", ");
+                                sql.push_str(&format!(
+                                    " ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({});",
+                                    table_name, constraint_name, fields_sql
+                                ));
+                            }
+                        }
+                    }
                 }
 
                 sql
@@ -547,7 +581,56 @@ pub mod codegen {
             Change::RemoveTable(name) => {
                 format!("DROP TABLE IF EXISTS {};", name)
             }
-            _ => String::new(),
+            Change::AddModelAttribute { table, attr } => {
+                let table_name = table.to_lowercase();
+                match attr.name.as_str() {
+                    "unique" => {
+                        if let Some(args) = &attr.args {
+                            let args_content = args.trim_start_matches('(').trim_end_matches(')').trim();
+                            if args_content.starts_with('[') && args_content.ends_with(']') {
+                                let fields: Vec<&str> = args_content[1..args_content.len() - 1]
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .collect();
+                                let fields_str = fields.join("_");
+                                let constraint_name = format!("uq_{}_{}", table_name, fields_str);
+                                let fields_sql = fields.join(", ");
+                                format!(
+                                    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{}') THEN ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({}); END IF; END $$;",
+                                    constraint_name, table_name, constraint_name, fields_sql
+                                )
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    }
+                    "index" => {
+                        if let Some(args) = &attr.args {
+                            let args_content = args.trim_start_matches('(').trim_end_matches(')').trim();
+                            if args_content.starts_with('[') && args_content.ends_with(']') {
+                                let fields: Vec<&str> = args_content[1..args_content.len() - 1]
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .collect();
+                                let fields_str = fields.join("_");
+                                let index_name = format!("idx_{}_{}", table_name, fields_str);
+                                let fields_sql = fields.join(", ");
+                                format!(
+                                    "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                                    index_name, table_name, fields_sql
+                                )
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    }
+                    _ => String::new(),
+                }
+            }
         }
     }
 
