@@ -450,6 +450,12 @@ pub fn generate_client_struct(
         quote! { .field(#accessor_name, &self.#accessor_name_ident) }
     });
 
+    let accessor_inits_clone = schema.models.iter().map(|model| {
+        let accessor_name = format_ident!("{}", to_snake_case(&model.name));
+        let accessor_struct = format_ident!("{}Accessor", model.name);
+        quote! { #accessor_name: #accessor_struct::new(pool.clone()) }
+    });
+
     quote! {
         #(#accessor_structs)*
 
@@ -458,6 +464,7 @@ pub fn generate_client_struct(
         pub enum ConnectionPool {
             Tls(Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>>),
             NoTls(Arc<bb8::Pool<bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>>),
+            Pinned(Arc<tokio_postgres::Client>),
         }
 
         impl ConnectionPool {
@@ -471,6 +478,9 @@ pub fn generate_client_struct(
                         let conn = pool.get().await.map_err(|_| tokio_postgres::Error::__private_api_timeout())?;
                         Ok(PooledClient::NoTls(conn))
                     }
+                    ConnectionPool::Pinned(client) => {
+                        Ok(PooledClient::Pinned(client.clone()))
+                    }
                 }
             }
         }
@@ -479,6 +489,7 @@ pub fn generate_client_struct(
         pub enum PooledClient<'a> {
             Tls(bb8::PooledConnection<'a, bb8_postgres::PostgresConnectionManager<tokio_postgres_rustls::MakeRustlsConnect>>),
             NoTls(bb8::PooledConnection<'a, bb8_postgres::PostgresConnectionManager<tokio_postgres::NoTls>>),
+            Pinned(Arc<tokio_postgres::Client>),
         }
 
         impl<'a> PooledClient<'a> {
@@ -486,6 +497,7 @@ pub fn generate_client_struct(
                 match self {
                     PooledClient::Tls(c) => c.query(sql, params).await,
                     PooledClient::NoTls(c) => c.query(sql, params).await,
+                    PooledClient::Pinned(c) => c.query(sql, params).await,
                 }
             }
 
@@ -493,6 +505,7 @@ pub fn generate_client_struct(
                 match self {
                     PooledClient::Tls(c) => c.query_one(sql, params).await,
                     PooledClient::NoTls(c) => c.query_one(sql, params).await,
+                    PooledClient::Pinned(c) => c.query_one(sql, params).await,
                 }
             }
 
@@ -500,6 +513,7 @@ pub fn generate_client_struct(
                 match self {
                     PooledClient::Tls(c) => c.query_opt(sql, params).await,
                     PooledClient::NoTls(c) => c.query_opt(sql, params).await,
+                    PooledClient::Pinned(c) => c.query_opt(sql, params).await,
                 }
             }
 
@@ -507,6 +521,7 @@ pub fn generate_client_struct(
                 match self {
                     PooledClient::Tls(c) => c.execute(sql, params).await,
                     PooledClient::NoTls(c) => c.execute(sql, params).await,
+                    PooledClient::Pinned(c) => c.execute(sql, params).await,
                 }
             }
         }
@@ -514,6 +529,7 @@ pub fn generate_client_struct(
         #[derive(Clone)]
         pub struct Client {
             pool: ConnectionPool,
+            connection_string: Option<String>,
             #(#model_accessors),*
         }
         impl std::fmt::Debug for Client {
@@ -526,12 +542,10 @@ pub fn generate_client_struct(
         }
         impl Client {
             pub async fn new(connection_string: &str) -> Result<Self, Error> {
-                // Detect if this is a localhost connection (no TLS needed)
                 let is_local = connection_string.contains("localhost") || connection_string.contains("127.0.0.1");
                 let requires_ssl = connection_string.contains("sslmode=require") || connection_string.contains("sslmode=verify");
-                
+
                 let pool = if is_local && !requires_ssl {
-                    // Use NoTls for localhost connections
                     let manager = bb8_postgres::PostgresConnectionManager::new_from_stringlike(
                         connection_string,
                         tokio_postgres::NoTls,
@@ -542,7 +556,6 @@ pub fn generate_client_struct(
                         .await?;
                     ConnectionPool::NoTls(Arc::new(pool))
                 } else {
-                    // Use TLS for remote connections
                     let root_store = rustls::RootCertStore {
                         roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
                     };
@@ -560,11 +573,20 @@ pub fn generate_client_struct(
                         .await?;
                     ConnectionPool::Tls(Arc::new(pool))
                 };
-                
+
                 Ok(Self {
                     pool: pool.clone(),
+                    connection_string: Some(connection_string.to_string()),
                     #(#accessor_inits),*
                 })
+            }
+
+            pub fn from_pool(pool: ConnectionPool) -> Self {
+                Self {
+                    pool: pool.clone(),
+                    connection_string: None,
+                    #(#accessor_inits_clone),*
+                }
             }
 
             pub async fn get_client(&self) -> Result<PooledClient<'_>, Error> {
@@ -593,7 +615,46 @@ pub fn generate_client_struct(
                         let result = f(transaction).await;
                         result
                     }
+                    PooledClient::Pinned(_) => {
+                        Err(E::from(tokio_postgres::Error::__private_api_timeout()))
+                    }
                 }
+            }
+
+            pub async fn begin(&self) -> Result<TxClient, Error> {
+                let conn_str = self.connection_string.as_deref()
+                    .ok_or_else(|| tokio_postgres::Error::__private_api_timeout())?;
+                let is_local = conn_str.contains("localhost") || conn_str.contains("127.0.0.1");
+                let requires_ssl = conn_str.contains("sslmode=require") || conn_str.contains("sslmode=verify");
+                let client = if is_local && !requires_ssl {
+                    let (client, connection) = tokio_postgres::connect(conn_str, tokio_postgres::NoTls).await?;
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            eprintln!("Transaction connection error: {}", e);
+                        }
+                    });
+                    client
+                } else {
+                    let root_store = rustls::RootCertStore {
+                        roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+                    };
+                    let tls_config = rustls::ClientConfig::builder()
+                        .with_root_certificates(root_store)
+                        .with_no_client_auth();
+                    let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+                    let (client, connection) = tokio_postgres::connect(conn_str, tls).await?;
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            eprintln!("Transaction connection error: {}", e);
+                        }
+                    });
+                    client
+                };
+                client.execute("BEGIN", &[]).await?;
+                let pinned = Arc::new(client);
+                let pool = ConnectionPool::Pinned(pinned.clone());
+                let inner = Self::from_pool(pool);
+                Ok(TxClient { inner, pinned })
             }
 
             pub async fn execute_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<u64, Error> {
@@ -604,6 +665,30 @@ pub fn generate_client_struct(
             pub async fn query_raw(&self, sql: &str, params: &[&(dyn tokio_postgres::types::ToSql + Sync)]) -> Result<Vec<tokio_postgres::Row>, Error> {
                 let client = self.pool.get().await?;
                 client.query(sql, params).await
+            }
+        }
+
+        pub struct TxClient {
+            pub inner: Client,
+            pinned: Arc<tokio_postgres::Client>,
+        }
+
+        impl TxClient {
+            pub async fn commit(self) -> Result<(), Error> {
+                self.pinned.execute("COMMIT", &[]).await?;
+                Ok(())
+            }
+
+            pub async fn rollback(self) -> Result<(), Error> {
+                self.pinned.execute("ROLLBACK", &[]).await?;
+                Ok(())
+            }
+        }
+
+        impl std::ops::Deref for TxClient {
+            type Target = Client;
+            fn deref(&self) -> &Self::Target {
+                &self.inner
             }
         }
 
