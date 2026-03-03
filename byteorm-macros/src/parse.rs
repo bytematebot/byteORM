@@ -117,6 +117,11 @@ fn parse_field(field: &syn::Field) -> Field {
                             modifiers.push(Modifier::Unique);
                         } else if path.is_ident("index") {
                             modifiers.push(Modifier::Index);
+                        } else if path.is_ident("serial") {
+                            attributes.push(Attribute {
+                                name: "default".to_string(),
+                                args: Some("auto_increment".to_string()),
+                            });
                         }
                     }
                     Meta::NameValue(nv) => {

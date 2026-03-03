@@ -535,6 +535,9 @@ fn generate_derive_model(
         if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) {
             attrs.push(quote! { #[byteorm(pk)] });
         }
+        if field.type_name == "Serial" {
+            attrs.push(quote! { #[byteorm(serial)] });
+        }
         if field.modifiers.iter().any(|m| matches!(m, Modifier::Unique)) {
             attrs.push(quote! { #[byteorm(unique)] });
         }
