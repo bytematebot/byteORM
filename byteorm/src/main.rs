@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 mod studio;
 
+include!(concat!(env!("OUT_DIR"), "/embedded_macros.rs"));
+
 #[derive(Parser)]
 #[command(name = "byte")]
 #[command(about = "ByteORM CLI - Database schema management", long_about = None)]
@@ -314,6 +316,8 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
 
     fs::create_dir_all(client_path.join("src/models"))?;
 
+    embed_byteorm_macros(&client_path)?;
+
     let cargo_toml = generate_client_cargo_toml();
     fs::write(client_path.join("Cargo.toml"), cargo_toml)?;
 
@@ -335,36 +339,26 @@ fn generate_client_package(schema: &Schema) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+fn embed_byteorm_macros(client_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let macros_path = client_path.join("byteorm-macros");
+    for (rel, content) in embedded_macros_files() {
+        let dest = macros_path.join(rel);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&dest, content)?;
+    }
+    Ok(())
+}
+
 fn generate_client_cargo_toml() -> String {
-    let macros_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
-        .and_then(|dir| {
-            let candidates = [
-                dir.join("../../byteorm-macros"),
-                dir.join("../byteorm-macros"),
-            ];
-            candidates.into_iter().find(|p| p.exists())
-        })
-        .map(|p| p.canonicalize().unwrap_or(p))
-        .map(|p| {
-            let s = p.display().to_string().replace('\\', "/");
-            s.strip_prefix("//?/").unwrap_or(&s).to_string()
-        });
-
-    let macros_dep = if let Some(path) = macros_path {
-        format!(r#"byteorm-macros = {{ path = "{}" }}"#, path)
-    } else {
-        r#"byteorm-macros = { path = "../byteorm-macros" }"#.to_string()
-    };
-
     format!(r#"[package]
 name = "byteorm-client"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-{macros_dep}
+byteorm-macros = {{ path = "./byteorm-macros" }}
 serde = {{ version = "1.0.228", features = ["derive"]}}
 serde_json = "1.0.145"
 chrono = {{ version = "0.4.42", features = ["serde"]}}
