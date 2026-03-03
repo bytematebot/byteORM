@@ -30,6 +30,8 @@ enum Commands {
     SelfUpdate,
     /// Generate byteorm-client crate from schema without DB connection
     Generate,
+    /// Repair database: add missing constraints (unique, indexes) from schema
+    Repair,
 }
 
 #[tokio::main]
@@ -242,12 +244,158 @@ async fn main() {
             }
             println!("✅ byteorm-client generated successfully!");
         }
+        Some(Commands::Repair) => {
+            println!("🔧 Repairing database...");
+
+            let schema_files = discover_schema_files();
+            if schema_files.is_empty() {
+                eprintln!("No schema files found!");
+                return;
+            }
+
+            let schema = match load_and_merge_schemas(&schema_files) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error loading schemas: {}", e);
+                    return;
+                }
+            };
+
+            let client = match db::connect().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Database connection error: {}", e);
+                    return;
+                }
+            };
+
+            let existing_constraints: Vec<String> = match client
+                .query(
+                    "SELECT conname FROM pg_constraint WHERE connamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')",
+                    &[],
+                )
+                .await
+            {
+                Ok(rows) => rows.iter().map(|r| r.get::<_, String>(0)).collect(),
+                Err(e) => {
+                    eprintln!("Error querying constraints: {}", e);
+                    return;
+                }
+            };
+
+            let existing_indexes: Vec<String> = match client
+                .query(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'",
+                    &[],
+                )
+                .await
+            {
+                Ok(rows) => rows.iter().map(|r| r.get::<_, String>(0)).collect(),
+                Err(e) => {
+                    eprintln!("Error querying indexes: {}", e);
+                    return;
+                }
+            };
+
+            let mut sql_statements: Vec<String> = Vec::new();
+
+            for model in &schema.models {
+                let table_name = model.name.to_lowercase();
+
+                for field in &model.fields {
+                    if field.modifiers.iter().any(|m| matches!(m, Modifier::Index)) {
+                        let field_name = field.name.to_lowercase();
+                        let index_name = format!("idx_{}_{}", table_name, field_name);
+                        if !existing_indexes.iter().any(|i| i == &index_name) {
+                            sql_statements.push(format!(
+                                "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                                index_name, table_name, field_name
+                            ));
+                        }
+                    }
+                    if field.modifiers.iter().any(|m| matches!(m, Modifier::Unique)) {
+                        let constraint_name = format!("{}_{}_key", table_name, field.name.to_lowercase());
+                        if !existing_constraints.iter().any(|c| c == &constraint_name) {
+                            sql_statements.push(format!(
+                                "ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({});",
+                                table_name, constraint_name, field.name
+                            ));
+                        }
+                    }
+                }
+
+                for attr in &model.model_attributes {
+                    if let Some(args) = &attr.args {
+                        let args_content = args.trim_start_matches('(').trim_end_matches(')').trim();
+                        if !(args_content.starts_with('[') && args_content.ends_with(']')) {
+                            continue;
+                        }
+                        let fields: Vec<&str> = args_content[1..args_content.len() - 1]
+                            .split(',')
+                            .map(|s| s.trim())
+                            .collect();
+                        let fields_str = fields.join("_");
+
+                        match attr.name.as_str() {
+                            "unique" => {
+                                let constraint_name = format!("uq_{}_{}", table_name, fields_str);
+                                if !existing_constraints.iter().any(|c| c == &constraint_name) {
+                                    let fields_sql = fields.join(", ");
+                                    sql_statements.push(format!(
+                                        "ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({});",
+                                        table_name, constraint_name, fields_sql
+                                    ));
+                                }
+                            }
+                            "index" => {
+                                let index_name = format!("idx_{}_{}", table_name, fields_str);
+                                if !existing_indexes.iter().any(|i| i == &index_name) {
+                                    let fields_sql = fields.join(", ");
+                                    sql_statements.push(format!(
+                                        "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+                                        index_name, table_name, fields_sql
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            if sql_statements.is_empty() {
+                println!("✅ Database is in sync — no missing constraints or indexes.");
+            } else {
+                println!("Found {} missing constraint(s)/index(es):", sql_statements.len());
+                for stmt in &sql_statements {
+                    println!("  → {}", stmt);
+                }
+                let sql = sql_statements.join(" ");
+                match db::execute_sql(&client, &sql).await {
+                    Ok(_) => {
+                        println!("✅ Repair complete!");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Repair failed: {}", e);
+                    }
+                }
+            }
+
+            if let Err(e) = snapshot::init_snapshot_table(&client).await {
+                eprintln!("Error initializing snapshot table: {}", e);
+                return;
+            }
+            if let Err(e) = snapshot::save_snapshot(&client, &schema).await {
+                eprintln!("Error saving snapshot: {}", e);
+            }
+        }
         None => {
             println!("ByteORM CLI v0.1.0");
             println!("Commands:");
             println!("  push        - Push schema, run migrations, and generate byteorm-client crate");
             println!("  reset       - Drop all database tables and reset state (dangerous!)");
             println!("  studio      - Launch GUI to browse and edit data at http://localhost:5555");
+            println!("  repair      - Add missing constraints and indexes from schema to database");
             println!("  self-update - Update ByteORM to the latest version from GitHub");
             println!("\nUsage:");
             println!("  Single schema:  create schema.bo");
