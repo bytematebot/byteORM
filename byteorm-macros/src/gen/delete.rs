@@ -46,10 +46,16 @@ pub fn generate_delete_builder(model: &Model) -> TokenStream {
                     }
 
                     let mut sql = format!("DELETE FROM {}", me.table);
+                    let mut next_param_idx = 1;
                     let conds: Vec<String> = me.where_fragments.iter()
-                        .enumerate()
-                        .map(|(i, (col, idx))| {
-                            format!("{} = ${}", col, i + 1)
+                        .map(|(fragment, arg_idx)| {
+                            if *arg_idx == 0 {
+                                fragment.clone()
+                            } else {
+                                let clause = format!("{} ${}", fragment, next_param_idx);
+                                next_param_idx += 1;
+                                clause
+                            }
                         })
                         .collect();
                     sql.push_str(" WHERE ");

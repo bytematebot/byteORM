@@ -100,9 +100,17 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
                         if !where_fragments.is_empty() {
                             let mut sql = format!("SELECT COUNT(*) FROM {}", table);
                             let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+                            let mut next_param_idx = 1;
                             let conds: Vec<String> = where_fragments.iter()
-                                .enumerate()
-                                .map(|(i, (col, idx))| format!("{} = ${}", col, i + 1))
+                                .map(|(fragment, arg_idx)| {
+                                    if *arg_idx == 0 {
+                                        fragment.clone()
+                                    } else {
+                                        let clause = format!("{} ${}", fragment, next_param_idx);
+                                        next_param_idx += 1;
+                                        clause
+                                    }
+                                })
                                 .collect();
                             sql.push_str(" WHERE ");
                             sql.push_str(&conds.join(" AND "));

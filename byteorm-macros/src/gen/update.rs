@@ -110,10 +110,17 @@ pub fn generate_update_builder(model: &Model) -> TokenStream {
                     }
 
                     if !me.where_fragments.is_empty() {
+                        let mut next_param_idx = param_idx;
                         let where_clauses: Vec<String> = me.where_fragments.iter()
-                            .enumerate()
-                            .map(|(i, (col, _))| format!(
-                                "{} = ${}", col, param_idx + i))
+                            .map(|(fragment, arg_idx)| {
+                                if *arg_idx == 0 {
+                                    fragment.clone()
+                                } else {
+                                    let clause = format!("{} ${}", fragment, next_param_idx);
+                                    next_param_idx += 1;
+                                    clause
+                                }
+                            })
                             .collect();
                         sql.push_str(" WHERE ");
                         sql.push_str(&where_clauses.join(" AND "));
