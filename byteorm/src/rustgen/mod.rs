@@ -138,6 +138,7 @@ pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
         pub mod models;
         pub use models::*;
         pub use enums::*;
+        pub use tokio_postgres;
 
         pub trait FromRow {
             fn from_row(row: &tokio_postgres::Row) -> Self;
