@@ -335,6 +335,17 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             #(#order_by_methods)*
             #(#computed_order_by_methods)*
 
+            pub fn where_raw(mut self, clause: impl Into<String>, params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>) -> Self {
+                let clause = clause.into();
+                let base_idx = self.args.len() + 1;
+                let rewritten = (0..params.len()).fold(clause, |acc, i| {
+                    acc.replacen(&format!("${}", i + 1), &format!("${}", base_idx + i), 1)
+                });
+                self.where_clauses.push(rewritten);
+                self.args.extend(params);
+                self
+            }
+
             pub fn limit(mut self, limit: usize) -> Self {
                 self.limit = Some(limit);
                 self
@@ -432,6 +443,11 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             #(#query_order_delegations)*
             #(#computed_order_delegations)*
             #(#include_methods)*
+
+            pub fn where_raw(mut self, clause: impl Into<String>, params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>) -> Self {
+                self.wb = self.wb.where_raw(clause, params);
+                self
+            }
 
             pub fn limit(mut self, limit: usize) -> Self {
                 self.wb = self.wb.limit(limit);

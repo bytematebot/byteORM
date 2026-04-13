@@ -99,7 +99,7 @@ pub fn generate_where_methods(model: &Model, target_args: &str, target_fragments
         let base_method = quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push((#field_col.to_string(), self.#args_ident.len()));
+                self.#fragments_ident.push((format!("{} =", #field_col), self.#args_ident.len()));
                 self
             }
         };
