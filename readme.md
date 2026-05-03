@@ -1,1 +1,3 @@
-<!-- GitAds-Verify: 7OOQXR44OF37FQ8B8OEISYKK8T24BDD5 -->
+## GitAds Sponsored
+[![Sponsored by GitAds](https://gitads.dev/v1/ad-serve?source=bytematebot/byteorm@github)](https://gitads.dev/v1/ad-track?source=bytematebot/byteorm@github)
+
