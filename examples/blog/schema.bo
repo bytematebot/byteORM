@@ -1,0 +1,22 @@
+enum PostStatus {
+    Draft
+    Published
+    Archived
+}
+
+model User {
+    id         BigInt      PrimaryKey
+    email      String      Unique
+    username   String      NotNull
+    created_at TimestamptZ @default(now())
+}
+
+model Post {
+    id         BigInt      PrimaryKey
+    user_id    BigInt      NotNull ForeignKey(User.id, onDelete: cascade)
+    title      String      NotNull
+    content    String      NotNull
+    status     PostStatus  @default(Draft)
+    created_at TimestamptZ @default(now()) Index
+    updated_at TimestamptZ @default(now())
+}
