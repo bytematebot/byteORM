@@ -3,6 +3,7 @@ extern crate proc_macro;
 mod types;
 mod parse;
 mod codegen;
+mod r#gen;
 
 use proc_macro::TokenStream;
 use quote::quote;

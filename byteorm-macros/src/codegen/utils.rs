@@ -86,7 +86,12 @@ pub fn pk_args(model: &Model) -> (Vec<proc_macro2::Ident>, Vec<TokenStream>, Vec
     (pk_names, pk_types, pk_cols, pk_placeholders, pk_arg_refs)
 }
 
-pub fn generate_where_methods<'a>(model: &'a Model, target_args: &'a str, target_fragments: &'a str) -> impl Iterator<Item = TokenStream> + 'a {
+fn generate_where_methods_inner<'a>(
+    model: &'a Model,
+    target_args: &'a str,
+    target_fragments: &'a str,
+    append_equals: bool,
+) -> impl Iterator<Item = TokenStream> + 'a {
     model.fields.iter().flat_map(move |field| {
         let method_name = format_ident!("where_{}", to_snake_case(&field.name));
         let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
@@ -96,10 +101,16 @@ pub fn generate_where_methods<'a>(model: &'a Model, target_args: &'a str, target
         let args_ident = format_ident!("{}", target_args);
         let fragments_ident = format_ident!("{}", target_fragments);
 
+        let fragment_expr = if append_equals {
+            quote! { format!("{} =", #field_col) }
+        } else {
+            quote! { #field_col.to_string() }
+        };
+
         let base_method = quote! {
             pub fn #method_name(mut self, value: #field_type) -> Self {
                 self.#args_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push((#field_col.to_string(), self.#args_ident.len()));
+                self.#fragments_ident.push((#fragment_expr, self.#args_ident.len()));
                 self
             }
         };
@@ -140,6 +151,22 @@ pub fn generate_where_methods<'a>(model: &'a Model, target_args: &'a str, target
         }
         methods.into_iter()
     })
+}
+
+pub fn generate_where_methods<'a>(
+    model: &'a Model,
+    target_args: &'a str,
+    target_fragments: &'a str,
+) -> impl Iterator<Item = TokenStream> + 'a {
+    generate_where_methods_inner(model, target_args, target_fragments, false)
+}
+
+pub fn generate_where_methods_with_equals<'a>(
+    model: &'a Model,
+    target_args: &'a str,
+    target_fragments: &'a str,
+) -> impl Iterator<Item = TokenStream> + 'a {
+    generate_where_methods_inner(model, target_args, target_fragments, true)
 }
 
 pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_field: &'a str, vec_field: Option<&'a str>, fragments_field: Option<&'a str>) -> impl Iterator<Item = TokenStream> + 'a {
