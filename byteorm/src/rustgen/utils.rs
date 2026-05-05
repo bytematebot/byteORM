@@ -33,7 +33,10 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         "Float" => quote! { f64 },
         "Serial" => quote! { i32 },
         "Real" => quote! { f32 },
-        _ => quote! { String },
+        _ => {
+            let enum_type = format_ident!("{}", type_name);
+            quote! { #enum_type }
+        }
     };
 
     if nullable {
@@ -797,25 +800,68 @@ pub fn generate_set_methods(
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
+        let is_enum = !is_builtin_type(&field.type_name);
+        let is_string = matches!(field.type_name.as_str(), "String" | "Text");
 
-        let body = if use_hashmap {
-            let hashmap_ident = format_ident!("{}", hashmap_field);
+        if is_enum {
+            let body = if use_hashmap {
+                let hashmap_ident = format_ident!("{}", hashmap_field);
+                quote! {
+                    self.#hashmap_ident.insert(#field_col, Box::new(value.to_string()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                }
+            } else {
+                let vec_ident = format_ident!("{}", vec_field.unwrap());
+                let fragments_ident = format_ident!("{}", fragments_field.unwrap());
+                quote! {
+                    self.#vec_ident.push(Box::new(value.to_string()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                    self.#fragments_ident.push(#field_col);
+                }
+            };
             quote! {
-                self.#hashmap_ident.insert(#field_col, Box::new(value));
+                pub fn #method_name(mut self, value: #field_type) -> Self {
+                    #body
+                    self
+                }
+            }
+        } else if is_string {
+            let body = if use_hashmap {
+                let hashmap_ident = format_ident!("{}", hashmap_field);
+                quote! {
+                    self.#hashmap_ident.insert(#field_col, Box::new(value.into()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                }
+            } else {
+                let vec_ident = format_ident!("{}", vec_field.unwrap());
+                let fragments_ident = format_ident!("{}", fragments_field.unwrap());
+                quote! {
+                    self.#vec_ident.push(Box::new(value.into()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                    self.#fragments_ident.push(#field_col);
+                }
+            };
+            quote! {
+                pub fn #method_name(mut self, value: impl Into<#field_type>) -> Self {
+                    #body
+                    self
+                }
             }
         } else {
-            let vec_ident = format_ident!("{}", vec_field.unwrap());
-            let fragments_ident = format_ident!("{}", fragments_field.unwrap());
+            let body = if use_hashmap {
+                let hashmap_ident = format_ident!("{}", hashmap_field);
+                quote! {
+                    self.#hashmap_ident.insert(#field_col, Box::new(value));
+                }
+            } else {
+                let vec_ident = format_ident!("{}", vec_field.unwrap());
+                let fragments_ident = format_ident!("{}", fragments_field.unwrap());
+                quote! {
+                    self.#vec_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                    self.#fragments_ident.push(#field_col);
+                }
+            };
             quote! {
-                self.#vec_ident.push(Box::new(value) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
-                self.#fragments_ident.push(#field_col);
-            }
-        };
-
-        quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                #body
-                self
+                pub fn #method_name(mut self, value: #field_type) -> Self {
+                    #body
+                    self
+                }
             }
         }
     })

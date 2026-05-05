@@ -48,16 +48,100 @@ pub fn generate_rust_code(schema: &Schema) -> HashMap<String, String> {
     let enums_code = if !schema.enums.is_empty() {
         let enums = schema.enums.iter().map(|e| {
             let name = term_ident(&e.name);
+            let name_str = &e.name;
             let variants = e.values.iter().map(|v| {
                 let v_ident = term_ident(v);
                 quote! { #v_ident }
             });
+            let display_impl = {
+                let match_arms = e.values.iter().map(|v| {
+                    let v_ident = term_ident(v);
+                    let v_str = v;
+                    quote! { Self::#v_ident => write!(f, #v_str) }
+                });
+                quote! {
+                    impl std::fmt::Display for #name {
+                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                            match self {
+                                #(#match_arms),*
+                            }
+                        }
+                    }
+                }
+            };
+            let from_str_impl = {
+                let match_arms = e.values.iter().map(|v| {
+                    let v_str = v;
+                    let v_ident = term_ident(v);
+                    quote! { #v_str => Ok(Self::#v_ident) }
+                });
+                let match_arms_vec: Vec<_> = match_arms.collect();
+                let all_arms = if match_arms_vec.is_empty() {
+                    quote! {
+                        _ => Err(format!("Unknown variant: {}", s))
+                    }
+                } else {
+                    let last = &match_arms_vec[match_arms_vec.len() - 1];
+                    let rest = &match_arms_vec[..match_arms_vec.len() - 1];
+                    quote! {
+                        #(#rest,)*
+                        #last,
+                        _ => Err(format!("Unknown variant: {}", s))
+                    }
+                };
+                quote! {
+                    impl std::str::FromStr for #name {
+                        type Err = String;
+                        fn from_str(s: &str) -> Result<Self, Self::Err> {
+                            match s {
+                                #all_arms
+                            }
+                        }
+                    }
+                }
+            };
+            let to_sql_impl = quote! {
+                impl tokio_postgres::types::ToSql for #name {
+                    fn to_sql(&self, ty: &tokio_postgres::types::Type, out: &mut tokio_postgres::types::private::BytesMut) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+                        let s = self.to_string();
+                        s.to_sql(ty, out)
+                    }
+
+                    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+                        matches!(*ty, tokio_postgres::types::Type::TEXT)
+                    }
+
+                    fn to_sql_checked(&self, ty: &tokio_postgres::types::Type, out: &mut tokio_postgres::types::private::BytesMut) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+                        if !Self::accepts(ty) {
+                            return Err(format!("unsupported type {:?}", ty).into());
+                        }
+                        self.to_sql(ty, out)
+                    }
+                }
+            };
+            let from_sql_impl = quote! {
+                impl<'a> tokio_postgres::types::FromSql<'a> for #name {
+                    fn from_sql(ty: &tokio_postgres::types::Type, raw: &'a [u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+                        let s = String::from_sql(ty, raw)?;
+                        s.parse().map_err(|e| format!("Failed to parse {}: {}", stringify!(#name), e).into())
+                    }
+
+                    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+                        matches!(*ty, tokio_postgres::types::Type::TEXT)
+                    }
+                }
+            };
             quote! {
                 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
                 #[allow(non_camel_case_types)]
                 pub enum #name {
                     #(#variants),*
                 }
+
+                #display_impl
+                #from_str_impl
+                #to_sql_impl
+                #from_sql_impl
             }
         });
         let code = quote! {

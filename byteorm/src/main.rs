@@ -2,7 +2,6 @@ use byteorm_lib::*;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
-mod studio;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_macros.rs"));
 
@@ -20,12 +19,6 @@ enum Commands {
     Push,
     /// Drop all database tables and reset state (dangerous!)
     Reset,
-    /// Launch ByteORM Studio (web UI) on port 5555
-    Studio {
-        /// Port to bind the Studio server on (default 5555)
-        #[arg(long, default_value_t = 5555)]
-        port: u16,
-    },
     /// Update ByteORM to the latest version from GitHub
     SelfUpdate,
     /// Generate byteorm-client crate from schema without DB connection
@@ -183,35 +176,6 @@ async fn main() {
             }
 
             println!("Database reset complete!");
-        }
-        Some(Commands::Studio { port }) => {
-            println!("Starting ByteORM Studio on http://localhost:{} ...", port);
-
-            let schema_files = discover_schema_files();
-            if schema_files.is_empty() {
-                eprintln!("No schema files found! Create schema.bo or byteorm/*.bo first.");
-                return;
-            }
-
-            let schema = match load_and_merge_schemas(&schema_files) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Error loading schemas: {}", e);
-                    return;
-                }
-            };
-
-            let pool = match db::create_pool().await {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("Database pool error: {}", e);
-                    return;
-                }
-            };
-
-            if let Err(e) = crate::studio::run(schema, pool, port).await {
-                eprintln!("Studio error: {}", e);
-            }
         }
         Some(Commands::SelfUpdate) => {
             println!("🔄 Updating ByteORM to the latest version...");

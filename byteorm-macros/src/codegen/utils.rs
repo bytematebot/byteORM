@@ -14,7 +14,10 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         "Float" => quote! { f64 },
         "Serial" => quote! { i32 },
         "Real" => quote! { f32 },
-        _ => quote! { String },
+        _ => {
+            let enum_type = format_ident!("{}", type_name);
+            quote! { #enum_type }
+        }
     };
     if nullable { quote! { Option<#base_type> } } else { base_type }
 }
@@ -176,6 +179,7 @@ pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_fie
         let field_type = rust_type_from_schema(&field.type_name, is_nullable);
         let field_col = to_snake_case(&field.name);
         let is_enum = !is_builtin_type(&field.type_name);
+        let is_string = matches!(field.type_name.as_str(), "String" | "Text");
 
         if use_hashmap {
             let map_ident = format_ident!("{}", hashmap_field);
@@ -183,6 +187,13 @@ pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_fie
                 quote! {
                     pub fn #method_name(mut self, value: #field_type) -> Self {
                         self.#map_ident.insert(#field_col, Box::new(value.to_string()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self
+                    }
+                }
+            } else if is_string {
+                quote! {
+                    pub fn #method_name(mut self, value: impl Into<#field_type>) -> Self {
+                        self.#map_ident.insert(#field_col, Box::new(value.into()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                         self
                     }
                 }
@@ -201,6 +212,14 @@ pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_fie
                 quote! {
                     pub fn #method_name(mut self, value: #field_type) -> Self {
                         self.#vec_ident.push(Box::new(value.to_string()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
+                        self.#frags_ident.push(#field_col);
+                        self
+                    }
+                }
+            } else if is_string {
+                quote! {
+                    pub fn #method_name(mut self, value: impl Into<#field_type>) -> Self {
+                        self.#vec_ident.push(Box::new(value.into()) as Box<dyn tokio_postgres::types::ToSql + Sync + Send>);
                         self.#frags_ident.push(#field_col);
                         self
                     }

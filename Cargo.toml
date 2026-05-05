@@ -4,7 +4,7 @@ members = [
     "byteorm-macros",
 ]
 exclude = [
-    "examples/generated",
+    "examples/blog/generated",
 ]
 resolver = "3"
 
