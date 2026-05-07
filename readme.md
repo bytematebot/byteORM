@@ -2,20 +2,50 @@
 
 ---
 
-
 [![Crates.io](https://img.shields.io/badge/crates.io-0.1.6-orange)](https://crates.io/crates/byteorm)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-
-> Byteorm is a lightweight ORM for Rust that generates a fully typed client crate from a simple prisma-like schema definition.  Write your database schema in a clean .bo DSL file, then run
-byteorm push to apply migrations and generate a Rust client with query builders, CRUD operations, and connection pooling built in.
-
+> ByteORM is a lightweight ORM for Rust that generates a fully typed client crate from a Prisma-like `.bo` schema. Define your schema, run `byteorm push`, and use a typed Rust client with query builders, CRUD operations, and connection pooling.
 
 ## Using ByteORM
 
-### 1. Define your schema
+### 1. Initialize
 
-Create a `.bo` file — for example `schema.bo`:
+```bash
+byteorm init
+```
+
+This creates `byteorm.toml`, a starter `schema.bo`, and a generated-client ignore entry. Existing projects that already use `byteorm/*.bo` or `generated/` keep that layout.
+
+Example `byteorm.toml` for a single schema:
+
+```toml
+[schema]
+path = "schema.bo"
+
+[client]
+output = ".byteorm/client"
+crate_name = "byteorm-client"
+dependency_source = "vendored"
+```
+
+Example for multi-schema projects:
+
+```toml
+[schema]
+directory = "byteorm"
+
+[client]
+output = "generated"
+crate_name = "byteorm-client"
+dependency_source = "vendored"
+```
+
+ByteORM v0.1.x keeps `dependency_source = "vendored"` as the default. The generated client includes its matching `byteorm-macros` copy, so projects do not need separate crates.io packages yet.
+
+### 2. Define Your Schema
+
+Create or edit `schema.bo`:
 
 ```bo
 enum PostStatus {
@@ -42,15 +72,52 @@ model Post {
 }
 ```
 
-### 2. Push to database
+### 3. Generate Or Push
+
+Generate the typed client without touching the database:
+
+```bash
+byteorm generate
+```
+
+Push schema changes to the database and regenerate the client:
 
 ```bash
 byteorm push
 ```
 
-This generates a `byteorm-client` crate in `generated/` with fully typed query builders.
+If a migration would drop tables, columns, or enum types, ByteORM stops unless you explicitly accept it:
 
-### 3. Write your application
+```bash
+byteorm push --accept-data-loss
+```
+
+Inspect resolved paths and config:
+
+```bash
+byteorm doctor
+```
+
+Generate shell autocomplete scripts:
+
+```bash
+byteorm completions powershell
+byteorm completions zsh
+byteorm completions bash
+```
+
+The install scripts detect the current shell and ask whether to install autocomplete automatically. Set `BYTEORM_INSTALL_COMPLETIONS=1` to install without prompting, or `BYTEORM_INSTALL_COMPLETIONS=0` to skip it.
+
+### 4. Use The Client
+
+Add the generated client path printed by `byteorm init` or `byteorm push` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+byteorm-client = { path = ".byteorm/client" }
+```
+
+Then use it from Rust:
 
 ```rust
 use byteorm_client::{Client, PostStatus};
@@ -64,38 +131,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .set_username("alice")
     }).await?;
 
-    println!("Created user: {} (id={})", user.username, user.id);
-
     let post = client.post.create(|p| {
         p.set_user_id(user.id)
             .set_title("Hello ByteORM")
             .set_content("This is my first post using ByteORM!")
+            .set_status(PostStatus::Draft)
     }).await?;
 
     println!("Created post: {} (id={})", post.title, post.id);
-
-    let posts = client.post.find_many(|p| {
-        p.where_user_id(user.id)
-            .order_by_created_at_desc()
-    }).await?;
-
-    println!("User has {} post(s)", posts.len());
-
-    client.post.update(|p| {
-        p.where_id(post.id)
-            .set_status(PostStatus::Published)
-    }).await?;
-
-    println!("Post status updated to Published");
 
     Ok(())
 }
 ```
 
-### 4. Run it
-
-```bash
-cargo run
-```
-
-> A complete working example lives in [`examples/blog/`](examples/blog/).
+> A complete working example lives in [`examples/blog/`](examples/blog/). Run it with `cargo run --example blog` from that directory.
