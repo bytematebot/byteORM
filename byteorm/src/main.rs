@@ -323,12 +323,10 @@ async fn main() {
             println!("Database reset complete!");
         }
         Some(Commands::SelfUpdate) => {
-            println!("🔄 Updating ByteORM to the latest version...");
             if let Err(e) = self_update().await {
-                eprintln!("❌ Update failed: {}", e);
+                eprintln!("Update failed: {}", e);
                 return;
             }
-            println!("✅ ByteORM updated successfully!");
         }
         Some(Commands::Generate) => {
             println!("🔍 Generating client code...");
@@ -1295,9 +1293,9 @@ futures-util = "0.3.31"
 async fn self_update() -> Result<(), Box<dyn std::error::Error>> {
     use std::env;
     use std::fs;
-    use std::path::PathBuf;
+    use std::process::Command;
 
-    println!("🔄 Updating ByteORM...");
+    println!("Updating ByteORM from GitHub...");
 
     let current_exe = env::current_exe()?;
 
@@ -1305,32 +1303,26 @@ async fn self_update() -> Result<(), Box<dyn std::error::Error>> {
     {
         let temp_dir = env::temp_dir();
 
-        println!("📦 Installing new version to temporary location...");
-        let install_status = std::process::Command::new("cargo")
-            .args([
-                "install",
-                "--git",
-                "https://github.com/bytematebot/byteorm",
-                "--package",
-                "byteorm",
-                "--bin",
-                "byteorm",
-                "--force",
-                "--root",
-                temp_dir.to_str().unwrap(),
-            ])
-            .status()?;
-
-        if !install_status.success() {
-            return Err("cargo install failed".into());
-        }
+        println!("Installing the new binary into a temporary location...");
+        run_cargo_install_quiet(vec![
+            "install".to_string(),
+            "--git".to_string(),
+            "https://github.com/bytematebot/byteorm".to_string(),
+            "--package".to_string(),
+            "byteorm".to_string(),
+            "--bin".to_string(),
+            "byteorm".to_string(),
+            "--force".to_string(),
+            "--root".to_string(),
+            temp_dir.to_string_lossy().to_string(),
+        ])?;
 
         let installed_exe = temp_dir.join("bin").join("byteorm.exe");
         if !installed_exe.exists() {
             return Err("New executable not found after install".into());
         }
 
-        println!("📝 Creating update script...");
+        println!("Preparing the handoff script...");
         let script_path = temp_dir.join("byteorm_update.ps1");
         let script_content = format!(
             r#"Start-Sleep -Milliseconds 500
@@ -1338,7 +1330,7 @@ Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 Copy-Item -Path '{}' -Destination '{}' -Force
 Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
-Write-Host "✅ ByteORM updated successfully!"
+Write-Host "ByteORM updated successfully."
 "#,
             current_exe.display(),
             installed_exe.display(),
@@ -1349,8 +1341,8 @@ Write-Host "✅ ByteORM updated successfully!"
 
         fs::write(&script_path, script_content)?;
 
-        println!("🚀 Launching update script...");
-        std::process::Command::new("powershell")
+        println!("Launching the handoff script...");
+        Command::new("powershell")
             .args([
                 "-ExecutionPolicy",
                 "Bypass",
@@ -1359,33 +1351,88 @@ Write-Host "✅ ByteORM updated successfully!"
             ])
             .spawn()?;
 
-        println!("✅ Update initiated. ByteORM will exit now.");
+        println!("Update initiated. ByteORM will exit now.");
         std::process::exit(0);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        println!("📦 Installing new version...");
-        let install_status = std::process::Command::new("cargo")
-            .args([
-                "install",
-                "--git",
-                "https://github.com/bytematebot/byteorm",
-                "--package",
-                "byteorm",
-                "--bin",
-                "byteorm",
-                "--force",
-            ])
-            .status()?;
+        println!("Installing the new binary...");
+        run_cargo_install_quiet(vec![
+            "install".to_string(),
+            "--git".to_string(),
+            "https://github.com/bytematebot/byteorm".to_string(),
+            "--package".to_string(),
+            "byteorm".to_string(),
+            "--bin".to_string(),
+            "byteorm".to_string(),
+            "--force".to_string(),
+        ])?;
 
-        if !install_status.success() {
-            return Err("cargo install failed".into());
-        }
-
-        println!("✅ ByteORM updated successfully!");
-        println!("🔄 Restart ByteORM to use the new version.");
+        println!("ByteORM updated successfully.");
+        println!("Restart ByteORM to use the new version.");
 
         Ok(())
     }
+}
+
+fn run_cargo_install_quiet(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    let mut command = Command::new("cargo");
+    command
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let worker = thread::spawn(move || command.output());
+    let frames = ["|", "/", "-", "\\"];
+    let messages = [
+        "borrowing the latest binary",
+        "asking Cargo to keep it chill",
+        "warming up the type checker",
+        "compiling optimism",
+        "linking tiny bits of confidence",
+        "making semver behave",
+        "convincing rustc this is fine",
+        "installing fewer surprises",
+    ];
+    let mut tick = 0usize;
+
+    while !worker.is_finished() {
+        let frame = frames[tick % frames.len()];
+        let message = messages[(tick / 4) % messages.len()];
+        print!("\r{} {}", frame, message);
+        io::stdout().flush()?;
+        tick += 1;
+        thread::sleep(Duration::from_millis(140));
+    }
+
+    print!("\r{}\r", " ".repeat(80));
+    io::stdout().flush()?;
+
+    let output = worker
+        .join()
+        .map_err(|_| "cargo install worker panicked")??;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    eprintln!("cargo install failed with status: {}", output.status);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        eprintln!("\nCargo stdout:\n{}", stdout.trim_end());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        eprintln!("\nCargo stderr:\n{}", stderr.trim_end());
+    }
+
+    Err("cargo install failed".into())
 }
