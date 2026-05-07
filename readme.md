@@ -101,12 +101,22 @@ byteorm doctor
 Generate shell autocomplete scripts:
 
 ```bash
+byteorm completions
+byteorm completions install
 byteorm completions powershell
 byteorm completions zsh
 byteorm completions bash
 ```
 
-The install scripts detect the current shell and ask whether to install autocomplete automatically. Set `BYTEORM_INSTALL_COMPLETIONS=1` to install without prompting, or `BYTEORM_INSTALL_COMPLETIONS=0` to skip it.
+`byteorm completions` detects the current shell and prints the recommended install command. `byteorm completions install` writes the completion script to the standard location for bash, zsh, fish, PowerShell, or elvish.
+
+For a one-off bash session without installing anything:
+
+```bash
+source <(byteorm completions bash)
+```
+
+The install scripts also detect the current shell and ask whether to install autocomplete automatically. Set `BYTEORM_INSTALL_COMPLETIONS=1` to install without prompting, or `BYTEORM_INSTALL_COMPLETIONS=0` to skip it.
 
 ### 4. Use The Client
 

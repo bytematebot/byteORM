@@ -51,29 +51,42 @@ enum Commands {
     Repair,
     /// Generate shell autocomplete scripts
     Completions {
-        /// Shell to generate completions for
+        /// Shell to generate completions for, or "install" to install for the detected shell
         #[arg(value_enum)]
-        shell: CompletionShell,
+        target: Option<CompletionTarget>,
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CompletionShell {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CompletionTarget {
     Bash,
     Zsh,
     Fish,
     Powershell,
     Elvish,
+    Install,
 }
 
-impl CompletionShell {
-    fn as_clap_shell(self) -> Shell {
+impl CompletionTarget {
+    fn as_clap_shell(self) -> Option<Shell> {
         match self {
-            Self::Bash => Shell::Bash,
-            Self::Zsh => Shell::Zsh,
-            Self::Fish => Shell::Fish,
-            Self::Powershell => Shell::PowerShell,
-            Self::Elvish => Shell::Elvish,
+            Self::Bash => Some(Shell::Bash),
+            Self::Zsh => Some(Shell::Zsh),
+            Self::Fish => Some(Shell::Fish),
+            Self::Powershell => Some(Shell::PowerShell),
+            Self::Elvish => Some(Shell::Elvish),
+            Self::Install => None,
+        }
+    }
+
+    fn as_name(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Fish => "fish",
+            Self::Powershell => "powershell",
+            Self::Elvish => "elvish",
+            Self::Install => "install",
         }
     }
 }
@@ -358,8 +371,10 @@ async fn main() {
                 print_schema_help();
             }
         },
-        Some(Commands::Completions { shell }) => {
-            generate_completions(shell);
+        Some(Commands::Completions { target }) => {
+            if let Err(e) = handle_completions(target) {
+                eprintln!("Autocomplete error: {}", e);
+            }
         }
         Some(Commands::Repair) => {
             println!("🔧 Repairing database...");
@@ -571,14 +586,196 @@ fn resolve_project(cli: &Cli) -> Result<ProjectPaths, Box<dyn std::error::Error>
     })
 }
 
-fn generate_completions(shell: CompletionShell) {
+fn handle_completions(target: Option<CompletionTarget>) -> Result<(), Box<dyn std::error::Error>> {
+    match target {
+        Some(CompletionTarget::Install) => install_detected_completions(),
+        Some(shell) => {
+            generate_completions(shell);
+            Ok(())
+        }
+        None => {
+            print_completion_status();
+            Ok(())
+        }
+    }
+}
+
+fn generate_completions(shell: CompletionTarget) {
+    let Some(clap_shell) = shell.as_clap_shell() else {
+        return;
+    };
     let mut command = Cli::command();
-    generate(
-        shell.as_clap_shell(),
-        &mut command,
-        "byteorm",
-        &mut std::io::stdout(),
-    );
+    generate(clap_shell, &mut command, "byteorm", &mut std::io::stdout());
+}
+
+fn render_completions(shell: CompletionTarget) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    if let Some(clap_shell) = shell.as_clap_shell() {
+        let mut command = Cli::command();
+        generate(clap_shell, &mut command, "byteorm", &mut buffer);
+    }
+    buffer
+}
+
+fn print_completion_status() {
+    match detect_completion_shell() {
+        Some(shell) => {
+            println!("Detected shell: {}", shell.as_name());
+            println!("Install autocomplete with:");
+            println!("  byteorm completions install");
+            println!();
+            println!("Generate the script manually with:");
+            println!("  byteorm completions {}", shell.as_name());
+            if shell == CompletionTarget::Bash {
+                println!();
+                println!("Enable it for the current bash session with:");
+                println!("  source <(byteorm completions bash)");
+            }
+        }
+        None => {
+            println!("Could not detect a supported shell.");
+            println!("Generate manually with:");
+            println!("  byteorm completions <bash|zsh|fish|powershell|elvish>");
+        }
+    }
+}
+
+fn install_detected_completions() -> Result<(), Box<dyn std::error::Error>> {
+    let shell = detect_completion_shell()
+        .ok_or("Could not detect a supported shell. Use byteorm completions <shell> manually.")?;
+    let home = home_dir().ok_or("Could not determine the home directory.")?;
+
+    println!("Detected shell: {}", shell.as_name());
+
+    match shell {
+        CompletionTarget::Bash => {
+            let base = env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"));
+            let path = base.join("bash-completion/completions/byteorm");
+            write_completion_file(&path, shell)?;
+            println!("Installed bash autocomplete: {}", path.display());
+            println!("Restart your shell, or enable it now with:");
+            println!("  source {}", path.display());
+        }
+        CompletionTarget::Zsh => {
+            let dir = home.join(".byteorm/completions");
+            let path = dir.join("_byteorm");
+            write_completion_file(&path, shell)?;
+            let zshrc = env::var_os("ZDOTDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.clone())
+                .join(".zshrc");
+            append_once(
+                &zshrc,
+                "# ByteORM autocomplete",
+                &format!(
+                    "fpath=(\"{}\" $fpath)\nautoload -Uz compinit\ncompinit",
+                    dir.display()
+                ),
+            )?;
+            println!("Installed zsh autocomplete: {}", path.display());
+            println!("Restart your shell if Tab completion is not active.");
+        }
+        CompletionTarget::Fish => {
+            let base = env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"));
+            let path = base.join("fish/completions/byteorm.fish");
+            write_completion_file(&path, shell)?;
+            println!("Installed fish autocomplete: {}", path.display());
+        }
+        CompletionTarget::Powershell => {
+            let path = home.join(".byteorm/completions/byteorm.ps1");
+            write_completion_file(&path, shell)?;
+            println!(
+                "Installed PowerShell autocomplete script: {}",
+                path.display()
+            );
+            println!("Add this line to your PowerShell profile:");
+            println!("  . \"{}\"", path.display());
+        }
+        CompletionTarget::Elvish => {
+            let base = env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"));
+            let path = base.join("elvish/lib/byteorm-completions.elv");
+            write_completion_file(&path, shell)?;
+            let rc = base.join("elvish/rc.elv");
+            append_once(&rc, "# ByteORM autocomplete", "use byteorm-completions")?;
+            println!("Installed elvish autocomplete: {}", path.display());
+            println!("Restart your shell if Tab completion is not active.");
+        }
+        CompletionTarget::Install => {}
+    }
+
+    Ok(())
+}
+
+fn write_completion_file(
+    path: &Path,
+    shell: CompletionTarget,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, render_completions(shell))?;
+    Ok(())
+}
+
+fn append_once(path: &Path, marker: &str, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let current = fs::read_to_string(path).unwrap_or_default();
+    if current.contains(marker) {
+        return Ok(());
+    }
+
+    let mut next = current;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push('\n');
+    next.push_str(marker);
+    next.push('\n');
+    next.push_str(content);
+    next.push('\n');
+    fs::write(path, next)?;
+    Ok(())
+}
+
+fn detect_completion_shell() -> Option<CompletionTarget> {
+    #[cfg(windows)]
+    {
+        return Some(CompletionTarget::Powershell);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let shell = env::var("SHELL").ok()?;
+        let name = Path::new(&shell)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&shell)
+            .to_ascii_lowercase();
+
+        match name.as_str() {
+            "bash" => Some(CompletionTarget::Bash),
+            "zsh" => Some(CompletionTarget::Zsh),
+            "fish" => Some(CompletionTarget::Fish),
+            "pwsh" | "powershell" => Some(CompletionTarget::Powershell),
+            "elvish" => Some(CompletionTarget::Elvish),
+            _ => None,
+        }
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
 fn load_project_config(
