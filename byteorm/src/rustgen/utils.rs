@@ -25,7 +25,7 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
     let base_type = match type_name {
         "BigInt" => quote! { i64 },
         "Int" => quote! { i32 },
-        "String" => quote! { String },
+        "String" | "Text" => quote! { String },
         "JsonB" | "Jsonb" => quote! { serde_json::Value },
         "TimestamptZ" | "Timestamp" => quote! { DateTime<Utc> },
         "Date" => quote! { NaiveDate },
@@ -43,6 +43,20 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
         quote! { Option<#base_type> }
     } else {
         base_type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rust_type_from_schema;
+
+    #[test]
+    fn maps_text_fields_to_string() {
+        assert_eq!(rust_type_from_schema("Text", false).to_string(), "String");
+        assert_eq!(
+            rust_type_from_schema("Text", true).to_string(),
+            "Option < String >"
+        );
     }
 }
 
@@ -137,7 +151,7 @@ pub fn generate_jsonb_sub_accessors(
         let jsonb_field_ident = format_ident!("{}", jsonb_name);
         let sub_accessor_struct = format_ident!("{}{}Accessor", model.name, capitalize_first(jsonb_name));
         let defaults_const = format_ident!("{}_DEFAULTS", jsonb_snake.to_uppercase());
-        
+
         // Check if the JsonB field is nullable
         let is_nullable = jsonb.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
 
