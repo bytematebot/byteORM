@@ -31,17 +31,46 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Decide whether to build
+        id: build_gate
+        shell: bash
+        run: |
+          should_build=true
+          reason="building for ${GITHUB_EVENT_NAME}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            current_version="$(sed -n 's/^pluginVersion=//p' gradle.properties)"
+            previous_version="$(git show HEAD^:integrations/intellij/byteorm-intellij/gradle.properties 2>/dev/null | sed -n 's/^pluginVersion=//p' || true)"
+
+            if [[ -n "${previous_version}" && "${current_version}" == "${previous_version}" ]]; then
+              should_build=false
+              reason="pluginVersion unchanged (${current_version}); skipping build and publish"
+            else
+              reason="pluginVersion changed (${previous_version:-none} -> ${current_version})"
+            fi
+          fi
+
+          printf 'should_build=%s\n' "${should_build}" >> "${GITHUB_OUTPUT}"
+          printf 'SHOULD_BUILD=%s\n' "${should_build}" >> "${GITHUB_ENV}"
+          printf '%s\n' "${reason}"
+          printf '### IntelliJ plugin\n%s\n' "${reason}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Java
+        if: steps.build_gate.outputs.should_build == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Make Gradle executable
+        if: steps.build_gate.outputs.should_build == 'true'
         run: chmod +x ./gradlew
 
       - name: Read plugin version
+        if: steps.build_gate.outputs.should_build == 'true'
         shell: bash
         run: |
           plugin_version="$(sed -n 's/^pluginVersion=//p' gradle.properties)"
@@ -49,9 +78,11 @@ jobs:
           printf 'Using pluginVersion=%s\n' "$plugin_version"
 
       - name: Build plugin
+        if: steps.build_gate.outputs.should_build == 'true'
         run: ./gradlew buildPlugin --stacktrace
 
       - name: Upload plugin ZIP
+        if: steps.build_gate.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: byteorm-schema-support-${{ env.PLUGIN_VERSION }}
@@ -59,5 +90,5 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to JetBrains Marketplace
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.JETBRAINS_MARKETPLACE_TOKEN != ''
+        if: steps.build_gate.outputs.should_build == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.JETBRAINS_MARKETPLACE_TOKEN != ''
         run: ./gradlew publishPlugin --stacktrace

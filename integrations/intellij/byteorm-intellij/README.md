@@ -38,6 +38,7 @@ That launches a sandbox IntelliJ IDEA instance with the ByteORM plugin loaded.
 
 The repository workflow builds this plugin only when files under `integrations/intellij/byteorm-intellij/` change.
 CI uses `pluginVersion` from `gradle.properties`, uploads the ZIP as a workflow artifact, and publishes to JetBrains Marketplace on `main` when `JETBRAINS_MARKETPLACE_TOKEN` is configured.
+Pushes to `main` skip plugin build and publish steps unless `pluginVersion` changed since the previous commit. Bump `pluginVersion` when a plugin update should be published.
 
 Optional signing secrets, if plugin signing is needed:
 
