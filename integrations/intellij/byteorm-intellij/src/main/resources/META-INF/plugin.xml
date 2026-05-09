@@ -1,0 +1,39 @@
+<idea-plugin>
+    <id>dev.bytemate.byteorm</id>
+    <name>ByteORM Schema Support</name>
+    <vendor email="support@bytemate.xyz">ByteMate</vendor>
+    <description><![CDATA[
+        ByteORM Schema Support brings editor support for ByteORM .bo schema files.
+        It registers the .bo file type and adds syntax highlighting, context-aware completion,
+        schema validation, file icons, spellchecking behavior, and editing helpers for a smoother
+        schema-writing workflow.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+            name="ByteORM Schema"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormFileType"
+            fieldName="INSTANCE"
+            language="ByteORM"
+            extensions="bo"/>
+        <fileIconProvider implementation="dev.bytemate.byteorm.intellij.ByteormFileIconProvider"/>
+        <lang.syntaxHighlighterFactory
+            language="ByteORM"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormSyntaxHighlighterFactory"/>
+        <lang.parserDefinition
+            language="ByteORM"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormParserDefinition"/>
+        <annotator
+            language="ByteORM"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormAnnotator"/>
+        <completion.contributor
+            language="ByteORM"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormCompletionContributor"/>
+        <enterHandlerDelegate implementation="dev.bytemate.byteorm.intellij.ByteormEnterHandler"/>
+        <spellchecker.support
+            language="ByteORM"
+            implementationClass="dev.bytemate.byteorm.intellij.ByteormSpellcheckingStrategy"
+            order="first"/>
+    </extensions>
+</idea-plugin>

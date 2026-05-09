@@ -1,0 +1,8 @@
+.gradle/
+build/
+.idea/
+out/
+.intellijPlatform/
+.kotlin/
+bundled-modules.txt
+bundled-plugins.txt

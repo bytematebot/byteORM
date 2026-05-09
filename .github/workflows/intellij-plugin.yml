@@ -1,0 +1,63 @@
+name: IntelliJ Plugin
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "integrations/intellij/byteorm-intellij/**"
+  pull_request:
+    paths:
+      - "integrations/intellij/byteorm-intellij/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build IntelliJ plugin
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/intellij/byteorm-intellij
+
+    env:
+      JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+      JETBRAINS_CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
+      JETBRAINS_PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
+      JETBRAINS_PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Read plugin version
+        shell: bash
+        run: |
+          plugin_version="$(sed -n 's/^pluginVersion=//p' gradle.properties)"
+          printf 'PLUGIN_VERSION=%s\n' "$plugin_version" >> "$GITHUB_ENV"
+          printf 'Using pluginVersion=%s\n' "$plugin_version"
+
+      - name: Build plugin
+        run: ./gradlew buildPlugin --stacktrace
+
+      - name: Upload plugin ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: byteorm-schema-support-${{ env.PLUGIN_VERSION }}
+          path: integrations/intellij/byteorm-intellij/build/distributions/*.zip
+          if-no-files-found: error
+
+      - name: Publish to JetBrains Marketplace
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.JETBRAINS_MARKETPLACE_TOKEN != ''
+        run: ./gradlew publishPlugin --stacktrace

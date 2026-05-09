@@ -155,3 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ```
 
 > A complete working example lives in [`examples/blog/`](examples/blog/). Run it with `cargo run --example blog` from that directory.
+
+## Editor Support
+
+The IntelliJ MVP lives in [`integrations/intellij/byteorm-intellij/`](integrations/intellij/byteorm-intellij/).
+It is intentionally kept as a normal subproject rather than a git submodule so the editor-support code stays close to ByteORM while remaining easy to extract later into a dedicated repo for IntelliJ, VS Code, Zed, or other editors.
