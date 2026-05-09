@@ -195,14 +195,17 @@ class ByteormLexer(
             state == STATE_ENUM_BODY -> ByteormTokenTypes.IDENTIFIER
             state == STATE_MODEL_BODY && lineWordIndex == 0 -> ByteormTokenTypes.IDENTIFIER
             state == STATE_MODEL_BODY && lineWordIndex == 1 -> {
-                if (text in byteormTypes || text in knownTypeNames() || text in enumValueNames()) ByteormTokenTypes.TYPE else ByteormTokenTypes.IDENTIFIER
+                when {
+                    text in byteormTypes -> ByteormTokenTypes.TYPE
+                    text in knownEntityTypeNames() -> ByteormTokenTypes.ENTITY_TYPE
+                    else -> ByteormTokenTypes.IDENTIFIER
+                }
             }
             text == "default" || text == "computed" || text == "audit" -> ByteormTokenTypes.ATTRIBUTE
             text in literalWords -> ByteormTokenTypes.LITERAL
             text in modifierWords -> ByteormTokenTypes.MODIFIER
             text in byteormTypes -> ByteormTokenTypes.TYPE
-            text in enumValueNames() -> ByteormTokenTypes.TYPE
-            text in knownTypeNames() -> ByteormTokenTypes.TYPE
+            text in knownEntityTypeNames() -> ByteormTokenTypes.ENTITY_TYPE
             else -> ByteormTokenTypes.IDENTIFIER
         }
 
@@ -287,15 +290,10 @@ class ByteormLexer(
         fun decodeParenDepth(encoded: Int): Int = encoded ushr PAREN_SHIFT
     }
 
-    private fun knownTypeNames(): Set<String> {
+    private fun knownEntityTypeNames(): Set<String> {
         return buildSet {
-            addAll(byteormTypes)
             symbols?.models?.let { addAll(it) }
             symbols?.enums?.let { addAll(it) }
         }
-    }
-
-    private fun enumValueNames(): Set<String> {
-        return symbols?.enumValues?.toSet().orEmpty()
     }
 }

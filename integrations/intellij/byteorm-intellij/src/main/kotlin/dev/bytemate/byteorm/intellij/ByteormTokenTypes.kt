@@ -10,6 +10,7 @@ object ByteormTokenTypes {
     val ATTRIBUTE = IElementType("BYTEORM_ATTRIBUTE", ByteormLanguage)
     val MODIFIER = IElementType("BYTEORM_MODIFIER", ByteormLanguage)
     val TYPE = IElementType("BYTEORM_TYPE", ByteormLanguage)
+    val ENTITY_TYPE = IElementType("BYTEORM_ENTITY_TYPE", ByteormLanguage)
     val IDENTIFIER = IElementType("BYTEORM_IDENTIFIER", ByteormLanguage)
     val STRING = IElementType("BYTEORM_STRING", ByteormLanguage)
     val LITERAL = IElementType("BYTEORM_LITERAL", ByteormLanguage)

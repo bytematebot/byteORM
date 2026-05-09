@@ -21,6 +21,7 @@ class ByteormSyntaxHighlighter(
             ByteormTokenTypes.ATTRIBUTE -> ATTRIBUTE_KEYS
             ByteormTokenTypes.MODIFIER -> MODIFIER_KEYS
             ByteormTokenTypes.TYPE -> TYPE_KEYS
+            ByteormTokenTypes.ENTITY_TYPE -> DECLARATION_NAME_KEYS
             ByteormTokenTypes.DECLARATION_NAME -> DECLARATION_NAME_KEYS
             ByteormTokenTypes.IDENTIFIER -> IDENTIFIER_KEYS
             ByteormTokenTypes.STRING -> STRING_KEYS

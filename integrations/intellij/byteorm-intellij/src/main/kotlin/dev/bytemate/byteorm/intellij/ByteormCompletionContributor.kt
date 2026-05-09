@@ -105,7 +105,7 @@ class ByteormCompletionContributor : CompletionContributor(), DumbAware {
                 referentialActions,
             )
             lower.contains("ondelete") -> referentialActions
-            block == Block.MODEL -> modelCandidates(tokens, endsWithWhitespace, types, entityNames, enumOnlyNames, attributes)
+            block == Block.MODEL -> modelCandidates(tokens, endsWithWhitespace, types, entityNames, attributes)
             block == Block.ENUM -> emptyList()
             tokenCount <= 1 -> listOf("model", "enum")
             else -> emptyList()
@@ -122,7 +122,6 @@ class ByteormCompletionContributor : CompletionContributor(), DumbAware {
         endsWithWhitespace: Boolean,
         types: List<String>,
         entityNames: List<String>,
-        enumOnlyNames: List<String>,
         attributes: List<String>,
     ): List<String> {
         if (tokens.isEmpty()) {
@@ -132,8 +131,8 @@ class ByteormCompletionContributor : CompletionContributor(), DumbAware {
         val lastToken = tokens.last()
         return when {
             lastToken.startsWith("@") -> attributes
-            tokens.size == 1 && endsWithWhitespace -> fallback(types, entityNames, enumOnlyNames)
-            tokens.size == 2 && !endsWithWhitespace -> fallback(types, entityNames, enumOnlyNames)
+            tokens.size == 1 && endsWithWhitespace -> fallback(types, entityNames)
+            tokens.size == 2 && !endsWithWhitespace -> fallback(types, entityNames)
             tokens.size >= 2 -> attributes
             else -> emptyList()
         }
