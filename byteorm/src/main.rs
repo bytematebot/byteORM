@@ -1605,10 +1605,11 @@ Write-Host "ByteORM updated successfully."
 }
 
 fn run_cargo_install_quiet(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{self, Write};
+    use std::io::{self, BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
+    use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     let mut command = Command::new("cargo");
     command
@@ -1616,51 +1617,141 @@ fn run_cargo_install_quiet(args: Vec<String>) -> Result<(), Box<dyn std::error::
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let worker = thread::spawn(move || command.output());
-    let frames = ["|", "/", "-", "\\"];
-    let messages = [
-        "borrowing the latest binary",
-        "asking Cargo to keep it chill",
-        "warming up the type checker",
-        "compiling optimism",
-        "linking tiny bits of confidence",
-        "making semver behave",
-        "convincing rustc this is fine",
-        "installing fewer surprises",
-    ];
-    let mut tick = 0usize;
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture cargo stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Failed to capture cargo stderr")?;
+    let (tx, rx) = mpsc::channel::<(bool, String)>();
 
-    while !worker.is_finished() {
+    let stdout_tx = tx.clone();
+    let stdout_reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if stdout_tx.send((false, line)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let stderr_reader = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if tx.send((true, line)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let frames = ["|", "/", "-", "\\"];
+    let started = Instant::now();
+    let mut tick = 0usize;
+    let mut progress = 5usize;
+    let mut last_line = "starting cargo install".to_string();
+    let mut stdout_lines = Vec::new();
+    let mut stderr_lines = Vec::new();
+
+    let status = loop {
+        while let Ok((is_stderr, line)) = rx.try_recv() {
+            let trimmed = line.trim().to_string();
+            if !trimmed.is_empty() {
+                progress = cargo_install_progress(progress, &trimmed);
+                last_line = trimmed.clone();
+            }
+            if is_stderr {
+                stderr_lines.push(line);
+            } else {
+                stdout_lines.push(line);
+            }
+        }
+
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+
         let frame = frames[tick % frames.len()];
-        let message = messages[(tick / 4) % messages.len()];
-        print!("\r{} {}", frame, message);
+        let elapsed = started.elapsed().as_secs();
+        let line = format!(
+            "{} {:>3}% [{}s] {}",
+            frame,
+            progress,
+            elapsed,
+            trim_progress_line(&last_line, 82)
+        );
+        print!("\r{:<110}", line);
         io::stdout().flush()?;
         tick += 1;
-        thread::sleep(Duration::from_millis(140));
+        thread::sleep(Duration::from_millis(120));
+    };
+
+    while let Ok((is_stderr, line)) = rx.try_recv() {
+        if is_stderr {
+            stderr_lines.push(line);
+        } else {
+            stdout_lines.push(line);
+        }
     }
 
-    print!("\r{}\r", " ".repeat(80));
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+
+    print!("\r{:<110}\r", "");
     io::stdout().flush()?;
 
-    let output = worker
-        .join()
-        .map_err(|_| "cargo install worker panicked")??;
-
-    if output.status.success() {
+    if status.success() {
+        println!("Install complete (100%).");
         return Ok(());
     }
 
-    eprintln!("cargo install failed with status: {}", output.status);
+    eprintln!("cargo install failed with status: {}", status);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout_lines.join("\n");
     if !stdout.trim().is_empty() {
         eprintln!("\nCargo stdout:\n{}", stdout.trim_end());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr_lines.join("\n");
     if !stderr.trim().is_empty() {
         eprintln!("\nCargo stderr:\n{}", stderr.trim_end());
     }
 
     Err("cargo install failed".into())
+}
+
+fn cargo_install_progress(current: usize, line: &str) -> usize {
+    let next = if line.contains("Updating git repository") {
+        10
+    } else if line.contains("Locking") {
+        18
+    } else if line.contains("Downloading") || line.contains("Downloaded") {
+        25
+    } else if line.contains("Compiling") || line.contains("Checking") {
+        (current + 1).clamp(35, 85)
+    } else if line.contains("Finished") {
+        92
+    } else if line.contains("Installing") {
+        96
+    } else if line.contains("Installed") {
+        100
+    } else {
+        current
+    };
+
+    current.max(next)
+}
+
+fn trim_progress_line(line: &str, max_chars: usize) -> String {
+    let char_count = line.chars().count();
+    if char_count <= max_chars {
+        return line.to_string();
+    }
+
+    let mut trimmed = line
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    trimmed.push_str("...");
+    trimmed
 }
