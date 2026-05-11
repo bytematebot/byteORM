@@ -45,6 +45,12 @@ enum Commands {
     SelfUpdate,
     /// Generate byteorm-client crate from schema without DB connection
     Generate,
+    /// Format ByteORM schema files
+    Fmt {
+        /// Check whether schema files are already formatted without writing changes
+        #[arg(long)]
+        check: bool,
+    },
     /// Show resolved config, schema files, and output paths
     Doctor,
     /// Repair database: add missing constraints (unique, indexes) from schema
@@ -362,6 +368,34 @@ async fn main() {
             }
             println!("✅ byteorm-client generated successfully!");
         }
+        Some(Commands::Fmt { check }) => {
+            let project = match resolve_project(&cli) {
+                Ok(project) => project,
+                Err(e) => {
+                    eprintln!("Configuration error: {}", e);
+                    print_schema_help();
+                    return;
+                }
+            };
+
+            if project.schema_files.is_empty() {
+                eprintln!("No schema files found!");
+                print_schema_help();
+                return;
+            }
+
+            match format_schema_files(&project.schema_files, check) {
+                Ok(changed) => {
+                    if check && changed {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error formatting schema: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(Commands::Doctor) => match resolve_project(&cli) {
             Ok(project) => print_doctor(&project),
             Err(e) => {
@@ -544,6 +578,7 @@ async fn main() {
                 "  push        - Push schema, run migrations, and generate byteorm-client crate"
             );
             println!("  generate    - Generate byteorm-client crate from schema");
+            println!("  fmt         - Format ByteORM schema files");
             println!("  reset       - Drop all database tables and reset state (dangerous!)");
             println!("  doctor      - Show resolved config, schema files, and output paths");
             println!("  completions - Generate shell autocomplete scripts");
@@ -555,6 +590,201 @@ async fn main() {
             println!("\nUse --help for more information");
         }
     }
+}
+
+fn format_schema_files(files: &[PathBuf], check: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut changed_any = false;
+
+    for file in files {
+        let current = fs::read_to_string(file)?;
+        let schema = parse_schema(&current)
+            .map_err(|e| format!("Error parsing {}: {}", file.display(), e))?;
+        let formatted = format_schema(&schema);
+
+        if current == formatted {
+            println!("Already formatted: {}", file.display());
+            continue;
+        }
+
+        changed_any = true;
+        if check {
+            println!("Needs formatting: {}", file.display());
+        } else {
+            fs::write(file, formatted)?;
+            println!("Formatted: {}", file.display());
+        }
+    }
+
+    if check && !changed_any {
+        println!("All schema files are formatted.");
+    }
+
+    Ok(changed_any)
+}
+
+fn format_schema(schema: &Schema) -> String {
+    let mut blocks = Vec::new();
+
+    for enum_def in &schema.enums {
+        blocks.push(format_enum(enum_def));
+    }
+
+    for model in &schema.models {
+        blocks.push(format_model(model));
+    }
+
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", blocks.join("\n\n"))
+    }
+}
+
+fn format_enum(enum_def: &Enum) -> String {
+    let mut lines = vec![format!("enum {} {{", enum_def.name)];
+    for value in &enum_def.values {
+        lines.push(format!("    {}", value));
+    }
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn format_model(model: &Model) -> String {
+    let mut entries = Vec::new();
+    let mut field_rows = Vec::new();
+
+    for field in &model.fields {
+        let field_type = format_field_type(field);
+        let suffix = format_field_suffix(field);
+        field_rows.push((field.name.as_str(), field_type, suffix));
+    }
+
+    let name_width = field_rows
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    let type_width = field_rows
+        .iter()
+        .map(|(_, type_name, _)| type_name.len())
+        .max()
+        .unwrap_or(0);
+
+    for (name, type_name, suffix) in field_rows {
+        let mut line = format!(
+            "    {:name_width$} {:type_width$}",
+            name,
+            type_name,
+            name_width = name_width,
+            type_width = type_width
+        );
+        if !suffix.is_empty() {
+            line.push(' ');
+            line.push_str(&suffix);
+        }
+        entries.push(line);
+    }
+
+    for computed in &model.computed_fields {
+        entries.push(format!(
+            "    @computed {} = \"{}\"",
+            computed.name,
+            escape_schema_string(&computed.expression)
+        ));
+    }
+
+    for attr in &model.model_attributes {
+        entries.push(format!(
+            "    @@{}{}",
+            attr.name,
+            attr.args.as_deref().unwrap_or("")
+        ));
+    }
+
+    let mut lines = vec![format!("model {} {{", model.name)];
+    lines.extend(entries);
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn format_field_type(field: &Field) -> String {
+    if field
+        .modifiers
+        .iter()
+        .any(|modifier| matches!(modifier, Modifier::Nullable))
+    {
+        format!("{}?", field.type_name)
+    } else {
+        field.type_name.clone()
+    }
+}
+
+fn format_field_suffix(field: &Field) -> String {
+    let mut parts = Vec::new();
+
+    for modifier in &field.modifiers {
+        match modifier {
+            Modifier::PrimaryKey => parts.push("PrimaryKey".to_string()),
+            Modifier::NotNull | Modifier::Nullable => {}
+            Modifier::Unique => parts.push("Unique".to_string()),
+            Modifier::Index => parts.push("Index".to_string()),
+            Modifier::ForeignKey {
+                model,
+                field,
+                on_delete,
+            } => parts.push(format_foreign_key(
+                model,
+                field.as_deref(),
+                on_delete.as_ref(),
+            )),
+        }
+    }
+
+    for attr in &field.attributes {
+        parts.push(format!(
+            "@{}{}",
+            attr.name,
+            attr.args.as_deref().unwrap_or("")
+        ));
+    }
+
+    parts.join(" ")
+}
+
+fn format_foreign_key(
+    model: &str,
+    field: Option<&str>,
+    on_delete: Option<&impl std::fmt::Debug>,
+) -> String {
+    let mut reference = model.to_string();
+    if let Some(field) = field {
+        reference.push('.');
+        reference.push_str(field);
+    }
+
+    if let Some(on_delete) = on_delete {
+        format!(
+            "ForeignKey({}, onDelete: {})",
+            reference,
+            format_foreign_key_action(on_delete)
+        )
+    } else {
+        format!("ForeignKey({})", reference)
+    }
+}
+
+fn format_foreign_key_action(action: &impl std::fmt::Debug) -> &'static str {
+    match format!("{:?}", action).as_str() {
+        "Cascade" => "cascade",
+        "NoAction" => "no action",
+        "SetNull" => "set null",
+        "Restrict" => "restrict",
+        _ => "cascade",
+    }
+}
+
+fn escape_schema_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn resolve_project(cli: &Cli) -> Result<ProjectPaths, Box<dyn std::error::Error>> {
