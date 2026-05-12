@@ -526,143 +526,144 @@ pub fn generate_accessor(model: &Model) -> TokenStream {
                     }
                 }
 
-                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
-                client.execute("BEGIN", &[]).await?;
+                let enum_casts: std::collections::HashMap<&str, &str> = [
+                    #(#enum_cast_entries),*
+                ].into_iter().collect();
+                let required_fields: Vec<&str> = vec![#(#required_fields),*];
+                let conflict_clause = conflict_columns.join(", ");
+                let mut insert_columns_template: Option<Vec<&str>> = None;
+                let mut update_columns_template: Option<Vec<&str>> = None;
+                let mut all_values: Vec<String> = Vec::with_capacity(records.len());
+                let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
+                let mut param_idx = 1;
 
-                let result = async {
-                    let enum_casts: std::collections::HashMap<&str, &str> = [
-                        #(#enum_cast_entries),*
-                    ].into_iter().collect();
-                    let required_fields: Vec<&str> = vec![#(#required_fields),*];
-                    let conflict_clause = conflict_columns.join(", ");
-                    let mut affected_rows = 0u64;
+                for record in records {
+                    let create_builder = create(#create_builder::new(self.pool.clone()), record.clone());
+                    let update_builder = update(#update_builder::new(self.pool.clone()), record);
 
-                    for record in records {
-                        let create_builder = create(#create_builder::new(self.pool.clone()), record.clone());
-                        let update_builder = update(#update_builder::new(self.pool.clone()), record);
+                    let #create_builder {
+                        where_fragments: create_where_fragments,
+                        set_values: mut create_set_values,
+                        ..
+                    } = create_builder;
 
-                        let #create_builder {
-                            where_fragments: create_where_fragments,
-                            set_values: mut create_set_values,
-                            ..
-                        } = create_builder;
+                    let #update_builder {
+                        where_fragments: update_where_fragments,
+                        set_fragments: update_set_fragments,
+                        set_args: update_set_args,
+                        inc_ops: update_inc_ops,
+                        ..
+                    } = update_builder;
 
-                        let #update_builder {
-                            where_fragments: update_where_fragments,
-                            set_fragments: update_set_fragments,
-                            set_args: update_set_args,
-                            inc_ops: update_inc_ops,
-                            ..
-                        } = update_builder;
+                    if !create_where_fragments.is_empty() {
+                        return Err("upsert_many does not support create where clauses".into());
+                    }
 
-                        if !create_where_fragments.is_empty() {
-                            return Err("upsert_many does not support create where clauses".into());
+                    if !update_where_fragments.is_empty() {
+                        return Err("upsert_many does not support update where clauses".into());
+                    }
+
+                    if !update_inc_ops.is_empty() {
+                        return Err("upsert_many does not support increment operations".into());
+                    }
+
+                    for req in &required_fields {
+                        if !create_set_values.contains_key(req) {
+                            return Err(format!("Missing required field: {}", req).into());
                         }
+                    }
 
-                        if !update_where_fragments.is_empty() {
-                            return Err("upsert_many does not support update where clauses".into());
+                    if create_set_values.is_empty() {
+                        return Err("No fields to upsert".into());
+                    }
+
+                    for conflict_col in &conflict_columns {
+                        if !create_set_values.contains_key(conflict_col) {
+                            return Err(format!("Missing conflict field in create builder: {}", conflict_col).into());
                         }
+                    }
 
-                        for req in &required_fields {
-                            if !create_set_values.contains_key(req) {
-                                return Err(format!("Missing required field: {}", req).into());
-                            }
+                    if update_set_fragments.len() != update_set_args.len() {
+                        return Err("Invalid update builder state".into());
+                    }
+
+                    let mut insert_columns: Vec<&str> = create_set_values.keys().copied().collect();
+                    insert_columns.sort();
+
+                    if let Some(expected) = &insert_columns_template {
+                        if expected != &insert_columns {
+                            return Err("upsert_many requires the same create columns for every record".into());
                         }
+                    } else {
+                        insert_columns_template = Some(insert_columns.clone());
+                    }
 
-                        if create_set_values.is_empty() {
-                            return Err("No fields to upsert".into());
+                    let mut seen_update_columns = std::collections::HashSet::new();
+                    let mut update_columns: Vec<&str> = Vec::new();
+
+                    for col in update_set_fragments {
+                        if !seen_update_columns.insert(col) {
+                            return Err(format!("Duplicate update field in upsert_many: {}", col).into());
                         }
-
-                        for conflict_col in &conflict_columns {
-                            if !create_set_values.contains_key(conflict_col) {
-                                return Err(format!("Missing conflict field in create builder: {}", conflict_col).into());
-                            }
+                        if !insert_columns.contains(&col) {
+                            return Err(format!("Update field '{}' must also be set in create builder", col).into());
                         }
+                        update_columns.push(col);
+                    }
 
-                        if update_set_fragments.len() != update_set_args.len() {
-                            return Err("Invalid update builder state".into());
+                    update_columns.sort();
+
+                    if let Some(expected) = &update_columns_template {
+                        if expected != &update_columns {
+                            return Err("upsert_many requires the same update columns for every record".into());
                         }
+                    } else {
+                        update_columns_template = Some(update_columns);
+                    }
 
-                        let mut insert_columns: Vec<&str> = create_set_values.keys().copied().collect();
-                        insert_columns.sort();
-                        let columns_str = insert_columns.join(", ");
-                        let insert_placeholders: Vec<String> = insert_columns
-                            .iter()
-                            .enumerate()
-                            .map(|(i, col)| {
-                                let idx = i + 1;
-                                if let Some(enum_type) = enum_casts.get(col) {
-                                    format!("${}::TEXT::{}", idx, enum_type)
-                                } else {
-                                    format!("${}", idx)
-                                }
-                            })
-                            .collect();
-                        let placeholders_str = insert_placeholders.join(", ");
-
-                        let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
-                        for col in &insert_columns {
-                            all_params.push(create_set_values.remove(col).unwrap());
-                        }
-
-                        let mut update_clauses: Vec<String> = vec![];
-                        let mut param_idx = all_params.len() + 1;
-
-                        for (col, arg) in update_set_fragments.iter().zip(update_set_args.into_iter()) {
-                            if let Some(enum_type) = enum_casts.get(col) {
-                                update_clauses.push(format!("{} = ${}::TEXT::{}", col, param_idx, enum_type));
-                            } else {
-                                update_clauses.push(format!("{} = ${}", col, param_idx));
-                            }
-                            all_params.push(arg);
-                            param_idx += 1;
-                        }
-
-                        for (field, op, value) in update_inc_ops {
-                            let clause = match op {
-                                "inc" => format!("{} = COALESCE({}.{}, 0) + ${}", field, #table_name, field, param_idx),
-                                "dec" => format!("{} = COALESCE({}.{}, 0) - ${}", field, #table_name, field, param_idx),
-                                "mul" => format!("{} = COALESCE({}.{}, 0) * ${}", field, #table_name, field, param_idx),
-                                "div" => format!("{} = COALESCE({}.{}, 0) / ${}", field, #table_name, field, param_idx),
-                                _ => return Err(format!("Unsupported update operation: {}", op).into()),
-                            };
-                            update_clauses.push(clause);
-                            all_params.push(Box::new(value));
-                            param_idx += 1;
-                        }
-
-                        let sql = if update_clauses.is_empty() {
-                            format!(
-                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
-                                #table_name, columns_str, placeholders_str, conflict_clause
-                            )
+                    let placeholders: Vec<String> = insert_columns.iter().map(|col| {
+                        let placeholder = if let Some(enum_type) = enum_casts.get(col) {
+                            format!("${}::TEXT::{}", param_idx, enum_type)
                         } else {
-                            format!(
-                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
-                                #table_name, columns_str, placeholders_str, conflict_clause, update_clauses.join(", ")
-                            )
+                            format!("${}", param_idx)
                         };
+                        param_idx += 1;
+                        placeholder
+                    }).collect();
 
-                        debug::log_query(&sql, all_params.len());
+                    all_values.push(format!("({})", placeholders.join(", ")));
 
-                        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-                            all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-                        affected_rows += client.execute(&sql, &params[..]).await?;
-                    }
-
-                    Ok(affected_rows)
-                }.await;
-
-                match result {
-                    Ok(affected_rows) => {
-                        client.execute("COMMIT", &[]).await?;
-                        Ok(affected_rows)
-                    }
-                    Err(err) => {
-                        let _ = client.execute("ROLLBACK", &[]).await;
-                        Err(err)
+                    for col in &insert_columns {
+                        all_params.push(create_set_values.remove(col).unwrap());
                     }
                 }
+
+                let insert_columns = insert_columns_template.ok_or("No fields to upsert")?;
+                let update_columns = update_columns_template.unwrap_or_default();
+                let columns_str = insert_columns.join(", ");
+                let sql = if update_columns.is_empty() {
+                    format!(
+                        "INSERT INTO {} ({}) VALUES {} ON CONFLICT ({}) DO NOTHING",
+                        #table_name, columns_str, all_values.join(", "), conflict_clause
+                    )
+                } else {
+                    let update_clauses: Vec<String> = update_columns
+                        .iter()
+                        .map(|col| format!("{} = EXCLUDED.{}", col, col))
+                        .collect();
+                    format!(
+                        "INSERT INTO {} ({}) VALUES {} ON CONFLICT ({}) DO UPDATE SET {}",
+                        #table_name, columns_str, all_values.join(", "), conflict_clause, update_clauses.join(", ")
+                    )
+                };
+
+                debug::log_query(&sql, all_params.len());
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                    all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                let result = client.execute(&sql, &params[..]).await?;
+                Ok(result)
             }
 
             #find_unique
