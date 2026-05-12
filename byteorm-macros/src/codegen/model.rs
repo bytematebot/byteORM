@@ -1,5 +1,5 @@
-use crate::types::*;
 use crate::codegen::utils::*;
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -8,7 +8,11 @@ pub fn generate_model_impl(model: &Model) -> TokenStream {
     let pk_fields: Vec<_> = model
         .fields
         .iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     let select_columns = generate_select_columns(model);

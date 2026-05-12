@@ -1,12 +1,18 @@
-use crate::types::*;
 use crate::codegen::utils::*;
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-pub fn generate_jsonb_accessor_fields(model: &Model) -> Vec<(proc_macro2::Ident, proc_macro2::Ident)> {
-    model.fields.iter()
-        .filter(|f| (f.type_name == "JsonB" || f.type_name == "Jsonb")
-            && f.attributes.iter().any(|a| a.name == "jsonb_default"))
+pub fn generate_jsonb_accessor_fields(
+    model: &Model,
+) -> Vec<(proc_macro2::Ident, proc_macro2::Ident)> {
+    model
+        .fields
+        .iter()
+        .filter(|f| {
+            (f.type_name == "JsonB" || f.type_name == "Jsonb")
+                && f.attributes.iter().any(|a| a.name == "jsonb_default")
+        })
         .map(|f| {
             let field_name = format_ident!("{}", to_snake_case(&f.name));
             let struct_name = format_ident!("{}{}Accessor", model.name, capitalize_first(&f.name));
@@ -21,13 +27,23 @@ pub fn generate_jsonb_sub_accessors(model: &Model) -> Vec<TokenStream> {
     let where_builder_name = format_ident!("{}WhereBuilder", model.name);
     let table_name = &model.table_name;
 
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
-    let jsonb_fields: Vec<_> = model.fields.iter()
-        .filter(|f| (f.type_name == "JsonB" || f.type_name == "Jsonb")
-            && f.attributes.iter().any(|a| a.name == "jsonb_default"))
+    let jsonb_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            (f.type_name == "JsonB" || f.type_name == "Jsonb")
+                && f.attributes.iter().any(|a| a.name == "jsonb_default")
+        })
         .collect();
 
     jsonb_fields.into_iter().map(|jsonb| {

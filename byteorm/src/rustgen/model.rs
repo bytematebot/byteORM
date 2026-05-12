@@ -1,7 +1,7 @@
 use crate::rustgen::{
-    generate_create_builder, generate_delete_builder, generate_from_row_impl, generate_select_columns,
-    generate_query_builder_struct, generate_update_builder, generate_upsert_builder, pk_args,
-    rust_type_from_schema, to_snake_case,
+    generate_create_builder, generate_delete_builder, generate_from_row_impl,
+    generate_query_builder_struct, generate_select_columns, generate_update_builder,
+    generate_upsert_builder, pk_args, rust_type_from_schema, to_snake_case,
 };
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;

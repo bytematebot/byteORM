@@ -178,7 +178,7 @@ fn parse_foreign_key(args: Option<String>) -> Result<Modifier, String> {
     if let Some(comma_pos) = arg_str.find(',') {
         reference = arg_str[..comma_pos].trim();
         let options = arg_str[comma_pos + 1..].trim();
-        
+
         if options.contains("onDelete:") || options.contains("onDelete :") {
             if options.contains("cascade") {
                 on_delete = Some(ForeignKeyAction::Cascade);

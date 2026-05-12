@@ -108,103 +108,125 @@ fn generate_where_builder_methods(model: &Model) -> Vec<TokenStream> {
 }
 
 fn generate_query_delegations(model: &Model) -> Vec<TokenStream> {
-    model.fields.iter().flat_map(|field| {
-        let method_name = format_ident!("where_{}", to_snake_case(&field.name));
-        let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
-        let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        let field_type = rust_type_from_schema(&field.type_name, is_nullable);
+    model
+        .fields
+        .iter()
+        .flat_map(|field| {
+            let method_name = format_ident!("where_{}", to_snake_case(&field.name));
+            let method_in = format_ident!("where_{}_in", to_snake_case(&field.name));
+            let is_nullable = field
+                .modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::Nullable));
+            let field_type = rust_type_from_schema(&field.type_name, is_nullable);
 
-        let base_method = quote! {
-            pub fn #method_name(mut self, value: #field_type) -> Self {
-                self.wb = self.wb.#method_name(value);
-                self
-            }
-        };
-
-        let in_method = quote! {
-            pub fn #method_in(mut self, values: Vec<#field_type>) -> Self {
-                self.wb = self.wb.#method_in(values);
-                self
-            }
-        };
-
-        let null_methods = if is_nullable {
-            let method_is_null = format_ident!("where_{}_is_null", to_snake_case(&field.name));
-            let method_is_not_null = format_ident!("where_{}_is_not_null", to_snake_case(&field.name));
-            vec![
-                quote! {
-                    pub fn #method_is_null(mut self) -> Self {
-                        self.wb = self.wb.#method_is_null();
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_is_not_null(mut self) -> Self {
-                        self.wb = self.wb.#method_is_not_null();
-                        self
-                    }
+            let base_method = quote! {
+                pub fn #method_name(mut self, value: #field_type) -> Self {
+                    self.wb = self.wb.#method_name(value);
+                    self
                 }
-            ]
-        } else {
-            vec![]
-        };
+            };
 
-        let mut methods = vec![base_method, in_method];
-        methods.extend(null_methods);
-
-        if field.type_name == "TimestamptZ" || field.type_name == "Snowflake" || field.type_name == "snowflake" || field.type_name == "Int" || field.type_name == "BigInt" || field.type_name == "Serial" || field.type_name == "Float" || field.type_name == "Real" || field.type_name == "String" || field.type_name == "Text" {
-            let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
-            let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
-            let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
-            let method_lte = format_ident!("where_{}_lte", to_snake_case(&field.name));
-
-            methods.extend(vec![
-                quote! {
-                    pub fn #method_gt(mut self, value: #field_type) -> Self {
-                        self.wb = self.wb.#method_gt(value);
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_lt(mut self, value: #field_type) -> Self {
-                        self.wb = self.wb.#method_lt(value);
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_gte(mut self, value: #field_type) -> Self {
-                        self.wb = self.wb.#method_gte(value);
-                        self
-                    }
-                },
-                quote! {
-                    pub fn #method_lte(mut self, value: #field_type) -> Self {
-                        self.wb = self.wb.#method_lte(value);
-                        self
-                    }
+            let in_method = quote! {
+                pub fn #method_in(mut self, values: Vec<#field_type>) -> Self {
+                    self.wb = self.wb.#method_in(values);
+                    self
                 }
-            ]);
-        }
+            };
 
-        methods
-    }).collect()
+            let null_methods = if is_nullable {
+                let method_is_null = format_ident!("where_{}_is_null", to_snake_case(&field.name));
+                let method_is_not_null =
+                    format_ident!("where_{}_is_not_null", to_snake_case(&field.name));
+                vec![
+                    quote! {
+                        pub fn #method_is_null(mut self) -> Self {
+                            self.wb = self.wb.#method_is_null();
+                            self
+                        }
+                    },
+                    quote! {
+                        pub fn #method_is_not_null(mut self) -> Self {
+                            self.wb = self.wb.#method_is_not_null();
+                            self
+                        }
+                    },
+                ]
+            } else {
+                vec![]
+            };
+
+            let mut methods = vec![base_method, in_method];
+            methods.extend(null_methods);
+
+            if field.type_name == "TimestamptZ"
+                || field.type_name == "Snowflake"
+                || field.type_name == "snowflake"
+                || field.type_name == "Int"
+                || field.type_name == "BigInt"
+                || field.type_name == "Serial"
+                || field.type_name == "Float"
+                || field.type_name == "Real"
+                || field.type_name == "String"
+                || field.type_name == "Text"
+            {
+                let method_gt = format_ident!("where_{}_gt", to_snake_case(&field.name));
+                let method_lt = format_ident!("where_{}_lt", to_snake_case(&field.name));
+                let method_gte = format_ident!("where_{}_gte", to_snake_case(&field.name));
+                let method_lte = format_ident!("where_{}_lte", to_snake_case(&field.name));
+
+                methods.extend(vec![
+                    quote! {
+                        pub fn #method_gt(mut self, value: #field_type) -> Self {
+                            self.wb = self.wb.#method_gt(value);
+                            self
+                        }
+                    },
+                    quote! {
+                        pub fn #method_lt(mut self, value: #field_type) -> Self {
+                            self.wb = self.wb.#method_lt(value);
+                            self
+                        }
+                    },
+                    quote! {
+                        pub fn #method_gte(mut self, value: #field_type) -> Self {
+                            self.wb = self.wb.#method_gte(value);
+                            self
+                        }
+                    },
+                    quote! {
+                        pub fn #method_lte(mut self, value: #field_type) -> Self {
+                            self.wb = self.wb.#method_lte(value);
+                            self
+                        }
+                    },
+                ]);
+            }
+
+            methods
+        })
+        .collect()
 }
 
 fn generate_order_by_delegations(model: &Model) -> Vec<TokenStream> {
-    model.fields.iter().map(|field| {
-        let asc_method = format_ident!("order_by_{}_asc", to_snake_case(&field.name));
-        let desc_method = format_ident!("order_by_{}_desc", to_snake_case(&field.name));
-        quote! {
-            pub fn #asc_method(mut self) -> Self {
-                self.wb = self.wb.#asc_method();
-                self
+    model
+        .fields
+        .iter()
+        .map(|field| {
+            let asc_method = format_ident!("order_by_{}_asc", to_snake_case(&field.name));
+            let desc_method = format_ident!("order_by_{}_desc", to_snake_case(&field.name));
+            quote! {
+                pub fn #asc_method(mut self) -> Self {
+                    self.wb = self.wb.#asc_method();
+                    self
+                }
+                pub fn #desc_method(mut self) -> Self {
+                    self.wb = self.wb.#desc_method();
+                    self
+                }
             }
-            pub fn #desc_method(mut self) -> Self {
-                self.wb = self.wb.#desc_method();
-                self
-            }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
@@ -215,10 +237,17 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
 
     let where_methods = generate_where_builder_methods(model);
 
-    let include_methods = model.fields.iter()
+    let include_methods = model
+        .fields
+        .iter()
         .filter_map(|field| {
             field.modifiers.iter().find_map(|m| {
-                if let Modifier::ForeignKey { model: target_model, field: target_field, .. } = m {
+                if let Modifier::ForeignKey {
+                    model: target_model,
+                    field: target_field,
+                    ..
+                } = m
+                {
                     Some((field, target_model, target_field))
                 } else {
                     None
@@ -244,21 +273,25 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
             }
         });
 
-    let order_by_methods: Vec<_> = model.fields.iter().map(|field| {
-        let asc_method = format_ident!("order_by_{}_asc", to_snake_case(&field.name));
-        let desc_method = format_ident!("order_by_{}_desc", to_snake_case(&field.name));
-        let field_col = to_snake_case(&field.name);
-        quote! {
-            pub fn #asc_method(mut self) -> Self {
-                self.order_by.push((#field_col.to_string(), "ASC".to_string()));
-                self
+    let order_by_methods: Vec<_> = model
+        .fields
+        .iter()
+        .map(|field| {
+            let asc_method = format_ident!("order_by_{}_asc", to_snake_case(&field.name));
+            let desc_method = format_ident!("order_by_{}_desc", to_snake_case(&field.name));
+            let field_col = to_snake_case(&field.name);
+            quote! {
+                pub fn #asc_method(mut self) -> Self {
+                    self.order_by.push((#field_col.to_string(), "ASC".to_string()));
+                    self
+                }
+                pub fn #desc_method(mut self) -> Self {
+                    self.order_by.push((#field_col.to_string(), "DESC".to_string()));
+                    self
+                }
             }
-            pub fn #desc_method(mut self) -> Self {
-                self.order_by.push((#field_col.to_string(), "DESC".to_string()));
-                self
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     let computed_where_methods: Vec<_> = model.computed_fields.iter().map(|cf| {
         let snake = to_snake_case(&cf.name);
@@ -294,22 +327,26 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
         }
     }).collect();
 
-    let computed_order_by_methods: Vec<_> = model.computed_fields.iter().map(|cf| {
-        let snake = to_snake_case(&cf.name);
-        let asc_method = format_ident!("order_by_{}_asc", snake);
-        let desc_method = format_ident!("order_by_{}_desc", snake);
-        let expr = cf.expression.clone();
-        quote! {
-            pub fn #asc_method(mut self) -> Self {
-                self.order_by.push((format!("({})", #expr), "ASC".to_string()));
-                self
+    let computed_order_by_methods: Vec<_> = model
+        .computed_fields
+        .iter()
+        .map(|cf| {
+            let snake = to_snake_case(&cf.name);
+            let asc_method = format_ident!("order_by_{}_asc", snake);
+            let desc_method = format_ident!("order_by_{}_desc", snake);
+            let expr = cf.expression.clone();
+            quote! {
+                pub fn #asc_method(mut self) -> Self {
+                    self.order_by.push((format!("({})", #expr), "ASC".to_string()));
+                    self
+                }
+                pub fn #desc_method(mut self) -> Self {
+                    self.order_by.push((format!("({})", #expr), "DESC".to_string()));
+                    self
+                }
             }
-            pub fn #desc_method(mut self) -> Self {
-                self.order_by.push((format!("({})", #expr), "DESC".to_string()));
-                self
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     let where_builder_struct = quote! {
         pub struct #where_builder_name {
@@ -363,48 +400,56 @@ pub fn generate_query_builder_struct(model: &Model) -> TokenStream {
     let query_where_delegations = generate_query_delegations(model);
     let query_order_delegations = generate_order_by_delegations(model);
 
-    let computed_where_delegations: Vec<_> = model.computed_fields.iter().map(|cf| {
-        let snake = to_snake_case(&cf.name);
-        let method_gt = format_ident!("where_{}_gt", snake);
-        let method_lt = format_ident!("where_{}_lt", snake);
-        let method_eq = format_ident!("where_{}_eq", snake);
-        quote! {
-            pub fn #method_gt<V>(mut self, value: V) -> Self
-            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
-            {
-                self.wb = self.wb.#method_gt(value);
-                self
+    let computed_where_delegations: Vec<_> = model
+        .computed_fields
+        .iter()
+        .map(|cf| {
+            let snake = to_snake_case(&cf.name);
+            let method_gt = format_ident!("where_{}_gt", snake);
+            let method_lt = format_ident!("where_{}_lt", snake);
+            let method_eq = format_ident!("where_{}_eq", snake);
+            quote! {
+                pub fn #method_gt<V>(mut self, value: V) -> Self
+                where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+                {
+                    self.wb = self.wb.#method_gt(value);
+                    self
+                }
+                pub fn #method_lt<V>(mut self, value: V) -> Self
+                where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+                {
+                    self.wb = self.wb.#method_lt(value);
+                    self
+                }
+                pub fn #method_eq<V>(mut self, value: V) -> Self
+                where V: tokio_postgres::types::ToSql + Sync + Send + 'static
+                {
+                    self.wb = self.wb.#method_eq(value);
+                    self
+                }
             }
-            pub fn #method_lt<V>(mut self, value: V) -> Self
-            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
-            {
-                self.wb = self.wb.#method_lt(value);
-                self
-            }
-            pub fn #method_eq<V>(mut self, value: V) -> Self
-            where V: tokio_postgres::types::ToSql + Sync + Send + 'static
-            {
-                self.wb = self.wb.#method_eq(value);
-                self
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
-    let computed_order_delegations: Vec<_> = model.computed_fields.iter().map(|cf| {
-        let snake = to_snake_case(&cf.name);
-        let asc_method = format_ident!("order_by_{}_asc", snake);
-        let desc_method = format_ident!("order_by_{}_desc", snake);
-        quote! {
-            pub fn #asc_method(mut self) -> Self {
-                self.wb = self.wb.#asc_method();
-                self
+    let computed_order_delegations: Vec<_> = model
+        .computed_fields
+        .iter()
+        .map(|cf| {
+            let snake = to_snake_case(&cf.name);
+            let asc_method = format_ident!("order_by_{}_asc", snake);
+            let desc_method = format_ident!("order_by_{}_desc", snake);
+            quote! {
+                pub fn #asc_method(mut self) -> Self {
+                    self.wb = self.wb.#asc_method();
+                    self
+                }
+                pub fn #desc_method(mut self) -> Self {
+                    self.wb = self.wb.#desc_method();
+                    self
+                }
             }
-            pub fn #desc_method(mut self) -> Self {
-                self.wb = self.wb.#desc_method();
-                self
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     let builder_struct = quote! {
         pub struct #builder_name {

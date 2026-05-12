@@ -1,5 +1,5 @@
-use crate::types::*;
 use crate::codegen::utils::generate_where_methods;
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 

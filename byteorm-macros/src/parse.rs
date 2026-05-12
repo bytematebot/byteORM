@@ -1,5 +1,5 @@
-use syn::{DeriveInput, Data, Fields, Meta, Expr, Lit};
 use crate::types::*;
+use syn::{Data, DeriveInput, Expr, Fields, Lit, Meta};
 
 pub fn parse_model(input: &DeriveInput) -> Model {
     let name = input.ident.to_string();
@@ -14,7 +14,12 @@ pub fn parse_model(input: &DeriveInput) -> Model {
         _ => panic!("ByteOrm can only be derived for structs"),
     };
 
-    Model { name, fields, computed_fields, table_name }
+    Model {
+        name,
+        fields,
+        computed_fields,
+        table_name,
+    }
 }
 
 fn parse_table_name(input: &DeriveInput) -> Option<String> {
@@ -22,9 +27,9 @@ fn parse_table_name(input: &DeriveInput) -> Option<String> {
         if !attr.path().is_ident("byteorm") {
             continue;
         }
-        let nested = attr.parse_args_with(
-            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-        ).ok()?;
+        let nested = attr
+            .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+            .ok()?;
         for meta in &nested {
             if let Meta::NameValue(nv) = meta {
                 if nv.path.is_ident("table") {
@@ -46,17 +51,14 @@ fn parse_computed_fields(input: &DeriveInput) -> Vec<ComputedField> {
         if !attr.path().is_ident("byteorm") {
             continue;
         }
-        let nested = attr.parse_args_with(
-            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-        );
+        let nested = attr
+            .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated);
         if let Ok(nested) = nested {
             for meta in &nested {
                 if let Meta::List(list) = meta {
                     if list.path.is_ident("computed") {
                         let inner: syn::Result<syn::punctuated::Punctuated<Meta, syn::Token![,]>> =
-                            list.parse_args_with(
-                                syn::punctuated::Punctuated::parse_terminated,
-                            );
+                            list.parse_args_with(syn::punctuated::Punctuated::parse_terminated);
                         if let Ok(inner) = inner {
                             let mut cf_name = None;
                             let mut cf_expr = None;
@@ -79,7 +81,10 @@ fn parse_computed_fields(input: &DeriveInput) -> Vec<ComputedField> {
                                 }
                             }
                             if let (Some(n), Some(e)) = (cf_name, cf_expr) {
-                                computed.push(ComputedField { name: n, expression: e });
+                                computed.push(ComputedField {
+                                    name: n,
+                                    expression: e,
+                                });
                             }
                         }
                     }
@@ -91,7 +96,11 @@ fn parse_computed_fields(input: &DeriveInput) -> Vec<ComputedField> {
 }
 
 fn parse_field(field: &syn::Field) -> Field {
-    let name = field.ident.as_ref().expect("Expected named field").to_string();
+    let name = field
+        .ident
+        .as_ref()
+        .expect("Expected named field")
+        .to_string();
     let (type_name, is_option) = rust_type_to_schema_type(&field.ty);
     let mut modifiers = Vec::new();
     let mut attributes = Vec::new();
@@ -104,9 +113,8 @@ fn parse_field(field: &syn::Field) -> Field {
         if !attr.path().is_ident("byteorm") {
             continue;
         }
-        let nested = attr.parse_args_with(
-            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-        );
+        let nested = attr
+            .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated);
         if let Ok(nested) = nested {
             for meta in &nested {
                 match meta {
@@ -156,10 +164,9 @@ fn parse_field(field: &syn::Field) -> Field {
                     }
                     Meta::List(list) => {
                         if list.path.is_ident("fk") {
-                            let inner: syn::Result<syn::punctuated::Punctuated<Meta, syn::Token![,]>> =
-                                list.parse_args_with(
-                                    syn::punctuated::Punctuated::parse_terminated,
-                                );
+                            let inner: syn::Result<
+                                syn::punctuated::Punctuated<Meta, syn::Token![,]>,
+                            > = list.parse_args_with(syn::punctuated::Punctuated::parse_terminated);
                             if let Ok(inner) = inner {
                                 let mut fk_model = None;
                                 let mut fk_field = None;
@@ -182,7 +189,10 @@ fn parse_field(field: &syn::Field) -> Field {
                                     }
                                 }
                                 if let Some(model) = fk_model {
-                                    modifiers.push(Modifier::ForeignKey { model, field: fk_field });
+                                    modifiers.push(Modifier::ForeignKey {
+                                        model,
+                                        field: fk_field,
+                                    });
                                 }
                             }
                         }
@@ -192,13 +202,19 @@ fn parse_field(field: &syn::Field) -> Field {
         }
     }
 
-    let final_type_name = if let Some(enum_attr) = attributes.iter().find(|a| a.name == "enum_type") {
+    let final_type_name = if let Some(enum_attr) = attributes.iter().find(|a| a.name == "enum_type")
+    {
         enum_attr.args.clone().unwrap_or(type_name)
     } else {
         type_name
     };
 
-    Field { name, type_name: final_type_name, modifiers, attributes }
+    Field {
+        name,
+        type_name: final_type_name,
+        modifiers,
+        attributes,
+    }
 }
 
 fn rust_type_to_schema_type(ty: &syn::Type) -> (String, bool) {

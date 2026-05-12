@@ -9,8 +9,8 @@ pub mod rustgen;
 #[grammar = "grammar.pest"]
 pub struct SchemaParser;
 
-pub use ast::*;
 use ast::ForeignKeyAction;
+pub use ast::*;
 pub use parser::parse_schema;
 
 pub mod snapshot {
@@ -66,7 +66,7 @@ pub mod snapshot {
 }
 
 pub mod diff {
-    use crate::{Field, Model, ModelAttribute, Modifier, Schema, Enum};
+    use crate::{Enum, Field, Model, ModelAttribute, Modifier, Schema};
     use std::collections::{HashMap, HashSet, VecDeque};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +92,10 @@ pub mod diff {
     pub enum Change {
         CreateEnum(Enum),
         DropEnum(String),
-        AlterEnum { name: String, added_values: Vec<String> },
+        AlterEnum {
+            name: String,
+            added_values: Vec<String>,
+        },
         CreateTable(Model),
         AddColumn {
             table: String,
@@ -119,7 +122,10 @@ pub mod diff {
         let mut deps = Vec::new();
         for field in &model.fields {
             for modifier in &field.modifiers {
-                if let Modifier::ForeignKey { model: ref_model, .. } = modifier {
+                if let Modifier::ForeignKey {
+                    model: ref_model, ..
+                } = modifier
+                {
                     if ref_model != &model.name {
                         deps.push(ref_model.clone());
                     }
@@ -131,17 +137,19 @@ pub mod diff {
 
     fn topological_sort_models(models: &[Model]) -> Vec<Model> {
         let model_names: HashSet<String> = models.iter().map(|m| m.name.clone()).collect();
-        let model_map: HashMap<String, &Model> = models.iter().map(|m| (m.name.clone(), m)).collect();
-        
-  
+        let model_map: HashMap<String, &Model> =
+            models.iter().map(|m| (m.name.clone(), m)).collect();
+
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
-        
+
         for model in models {
             in_degree.entry(model.name.clone()).or_insert(0);
-            dependents.entry(model.name.clone()).or_insert_with(Vec::new);
+            dependents
+                .entry(model.name.clone())
+                .or_insert_with(Vec::new);
         }
-        
+
         for model in models {
             let deps = get_fk_dependencies(model);
             for dep in deps {
@@ -151,20 +159,20 @@ pub mod diff {
                 }
             }
         }
-        
+
         let mut queue: VecDeque<String> = in_degree
             .iter()
             .filter(|entry| *entry.1 == 0)
             .map(|(name, _)| name.clone())
             .collect();
-        
+
         let mut sorted = Vec::new();
-        
+
         while let Some(name) = queue.pop_front() {
             if let Some(model) = model_map.get(&name) {
                 sorted.push((*model).clone());
             }
-            
+
             if let Some(deps) = dependents.get(&name) {
                 for dep_name in deps {
                     if let Some(deg) = in_degree.get_mut(dep_name) {
@@ -176,16 +184,18 @@ pub mod diff {
                 }
             }
         }
-        
+
         if sorted.len() < models.len() {
-            eprintln!("⚠️  Warning: Circular foreign key dependency detected. Some tables may not be created in optimal order.");
+            eprintln!(
+                "⚠️  Warning: Circular foreign key dependency detected. Some tables may not be created in optimal order."
+            );
             for model in models {
                 if !sorted.iter().any(|m| m.name == model.name) {
                     sorted.push(model.clone());
                 }
             }
         }
-        
+
         sorted
     }
 
@@ -195,7 +205,8 @@ pub mod diff {
         for enum_def in &current.enums {
             if let Some(prev) = previous {
                 if let Some(prev_enum) = prev.enums.iter().find(|e| e.name == enum_def.name) {
-                    let added_values: Vec<String> = enum_def.values
+                    let added_values: Vec<String> = enum_def
+                        .values
                         .iter()
                         .filter(|v| !prev_enum.values.contains(v))
                         .cloned()
@@ -221,7 +232,6 @@ pub mod diff {
                 }
             }
         }
-
 
         let mut tables_to_create: Vec<Model> = Vec::new();
 
@@ -292,9 +302,8 @@ pub mod diff {
     }
 }
 
-
 pub mod codegen {
-    use crate::{Field, Modifier, ForeignKeyAction, diff::Change};
+    use crate::{Field, ForeignKeyAction, Modifier, diff::Change};
 
     pub fn postgres_type(type_name: &str) -> String {
         match type_name {
@@ -311,7 +320,6 @@ pub mod codegen {
         }
     }
 
-
     pub fn get_type_default(type_name: &str) -> &'static str {
         match type_name {
             "BigInt" | "Int" | "Serial" => "0",
@@ -320,7 +328,7 @@ pub mod codegen {
             "String" | "Text" => "''",
             "JsonB" => "'{}'::jsonb",
             "TimestamptZ" | "Timestamp" => "now()",
-            _ => "''"  
+            _ => "''",
         }
     }
 
@@ -334,7 +342,11 @@ pub mod codegen {
                 Modifier::Nullable => sql.push_str(" NULL"),
                 Modifier::Unique => sql.push_str(" UNIQUE"),
                 Modifier::Index => {}
-                Modifier::ForeignKey { model, field, on_delete } => {
+                Modifier::ForeignKey {
+                    model,
+                    field,
+                    on_delete,
+                } => {
                     let fk_field = field.as_deref().unwrap_or("id");
                     sql.push_str(&format!(" REFERENCES {} ({})", model, fk_field));
                     if let Some(action) = on_delete {
@@ -352,7 +364,17 @@ pub mod codegen {
         if field.is_sql_default() {
             if let Some(value) = field.get_default_value() {
                 let sql_type = postgres_type(&field.type_name);
-                let known_types = ["BOOLEAN", "REAL", "INTEGER", "BIGINT", "SERIAL", "TEXT", "JSONB", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"];
+                let known_types = [
+                    "BOOLEAN",
+                    "REAL",
+                    "INTEGER",
+                    "BIGINT",
+                    "SERIAL",
+                    "TEXT",
+                    "JSONB",
+                    "TIMESTAMP",
+                    "TIMESTAMP WITH TIME ZONE",
+                ];
                 if matches!(
                     sql_type.as_str(),
                     "BOOLEAN" | "REAL" | "INTEGER" | "BIGINT" | "SERIAL"
@@ -373,7 +395,9 @@ pub mod codegen {
     pub fn change_to_sql(change: &Change) -> String {
         match change {
             Change::CreateEnum(enum_def) => {
-                let values = enum_def.values.iter()
+                let values = enum_def
+                    .values
+                    .iter()
                     .map(|v| format!("'{}'", v))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -382,12 +406,11 @@ pub mod codegen {
             Change::DropEnum(name) => {
                 format!("DROP TYPE IF EXISTS {} CASCADE;", name)
             }
-            Change::AlterEnum { name, added_values } => {
-                added_values.iter()
-                    .map(|v| format!("ALTER TYPE {} ADD VALUE '{}';", name, v))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
+            Change::AlterEnum { name, added_values } => added_values
+                .iter()
+                .map(|v| format!("ALTER TYPE {} ADD VALUE '{}';", name, v))
+                .collect::<Vec<_>>()
+                .join(" "),
 
             Change::CreateTable(model) => {
                 let mut sql = format!("CREATE TABLE IF NOT EXISTS {} ( ", model.name);
@@ -483,21 +506,31 @@ pub mod codegen {
                 sql
             }
             Change::AddColumn { table, field } => {
-                let is_not_null = field.modifiers.iter().any(|m| matches!(m, Modifier::NotNull));
+                let is_not_null = field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::NotNull));
                 let has_default = field.is_sql_default();
-                
+
                 let mut sql = if is_not_null && !has_default {
                     let temp_default = get_type_default(&field.type_name);
-                    eprintln!("ℹ️  Adding NOT NULL column '{}.{}' with temporary default '{}' for existing rows.", table, field.name, temp_default);
-                    
+                    eprintln!(
+                        "ℹ️  Adding NOT NULL column '{}.{}' with temporary default '{}' for existing rows.",
+                        table, field.name, temp_default
+                    );
+
                     format!(
                         "ALTER TABLE {} ADD COLUMN {} DEFAULT {}; ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
-                        table, field_to_sql(field), temp_default, table, field.name
+                        table,
+                        field_to_sql(field),
+                        temp_default,
+                        table,
+                        field.name
                     )
                 } else {
                     format!("ALTER TABLE {} ADD COLUMN {};", table, field_to_sql(field))
                 };
-                
+
                 if field.has_index() {
                     let table_name = table.to_lowercase();
                     let field_name = field.name.to_lowercase();
@@ -537,7 +570,10 @@ pub mod codegen {
                         ));
                     } else {
                         let temp_default = get_type_default(&new.type_name);
-                        eprintln!("ℹ️  Setting column '{}.{}' to NOT NULL. Updating existing NULL values to '{}'.", table, column, temp_default);
+                        eprintln!(
+                            "ℹ️  Setting column '{}.{}' to NOT NULL. Updating existing NULL values to '{}'.",
+                            table, column, temp_default
+                        );
                         statements.push(format!(
                             "UPDATE {} SET {} = {} WHERE {} IS NULL",
                             table, column, temp_default, column
@@ -586,7 +622,8 @@ pub mod codegen {
                 match attr.name.as_str() {
                     "unique" => {
                         if let Some(args) = &attr.args {
-                            let args_content = args.trim_start_matches('(').trim_end_matches(')').trim();
+                            let args_content =
+                                args.trim_start_matches('(').trim_end_matches(')').trim();
                             if args_content.starts_with('[') && args_content.ends_with(']') {
                                 let fields: Vec<&str> = args_content[1..args_content.len() - 1]
                                     .split(',')
@@ -608,7 +645,8 @@ pub mod codegen {
                     }
                     "index" => {
                         if let Some(args) = &attr.args {
-                            let args_content = args.trim_start_matches('(').trim_end_matches(')').trim();
+                            let args_content =
+                                args.trim_start_matches('(').trim_end_matches(')').trim();
                             if args_content.starts_with('[') && args_content.ends_with(']') {
                                 let fields: Vec<&str> = args_content[1..args_content.len() - 1]
                                     .split(',')
@@ -675,18 +713,21 @@ pub mod db {
         let db_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "host=localhost user=postgres dbname=byteorm".to_string());
 
-        let is_local = db_url.contains("localhost") || db_url.contains("127.0.0.1") || db_url.contains("host=localhost");
+        let is_local = db_url.contains("localhost")
+            || db_url.contains("127.0.0.1")
+            || db_url.contains("host=localhost");
         let requires_ssl = db_url.contains("sslmode=require") || db_url.contains("sslmode=verify");
-        
+
         if is_local && !requires_ssl {
-            let (client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls).await?;
-            
+            let (client, connection) =
+                tokio_postgres::connect(&db_url, tokio_postgres::NoTls).await?;
+
             tokio::spawn(async move {
                 if let Err(e) = connection.await {
                     eprintln!("Connection error: {}", e);
                 }
             });
-            
+
             Ok(client)
         } else {
             let root_store = rustls::RootCertStore {
@@ -746,7 +787,9 @@ pub mod db {
         }
     }
 
-    pub async fn get_existing_tables(client: &Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    pub async fn get_existing_tables(
+        client: &Client,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let rows = client
             .query(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",

@@ -1,6 +1,6 @@
 use crate::rustgen::{
-    generate_inc_methods, generate_select_columns, generate_set_methods, is_numeric_type,
-    rust_type_from_schema, to_snake_case, is_builtin_type,
+    generate_inc_methods, generate_select_columns, generate_set_methods, is_builtin_type,
+    is_numeric_type, rust_type_from_schema, to_snake_case,
 };
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
@@ -138,7 +138,7 @@ pub fn generate_upsert_builder(model: &Model) -> TokenStream {
                         let mut columns: Vec<&str> = all_values.keys().copied().collect();
                         columns.sort();
 
-                        let columns_str = columns.join(", ");                 
+                        let columns_str = columns.join(", ");
                         let placeholders: Vec<String> = columns.iter().enumerate()
                             .map(|(i, col)| {
                                 let idx = i + 1;

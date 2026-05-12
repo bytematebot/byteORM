@@ -19,13 +19,19 @@ pub fn rust_type_from_schema(type_name: &str, nullable: bool) -> TokenStream {
             quote! { #enum_type }
         }
     };
-    if nullable { quote! { Option<#base_type> } } else { base_type }
+    if nullable {
+        quote! { Option<#base_type> }
+    } else {
+        base_type
+    }
 }
 
 pub fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 { result.push('_'); }
+        if ch.is_uppercase() && i > 0 {
+            result.push('_');
+        }
         result.push(ch.to_lowercase().next().unwrap_or(ch));
     }
     result
@@ -44,15 +50,38 @@ pub fn is_numeric_type(ty: &str) -> bool {
 }
 
 pub fn is_builtin_type(ty: &str) -> bool {
-    matches!(ty, "BigInt" | "Int" | "String" | "JsonB" | "Jsonb" | "TimestamptZ" | "Timestamp" | "Boolean" | "Float" | "Serial" | "Real" | "Text" | "Date")
+    matches!(
+        ty,
+        "BigInt"
+            | "Int"
+            | "String"
+            | "JsonB"
+            | "Jsonb"
+            | "TimestamptZ"
+            | "Timestamp"
+            | "Boolean"
+            | "Float"
+            | "Serial"
+            | "Real"
+            | "Text"
+            | "Date"
+    )
 }
 
 pub fn generate_select_columns(model: &Model) -> String {
-    model.fields.iter().map(|field| {
-        let col_name = to_snake_case(&field.name);
-        if is_builtin_type(&field.type_name) { col_name }
-        else { format!("CAST({} AS TEXT) as {}", col_name, col_name) }
-    }).collect::<Vec<_>>().join(", ")
+    model
+        .fields
+        .iter()
+        .map(|field| {
+            let col_name = to_snake_case(&field.name);
+            if is_builtin_type(&field.type_name) {
+                col_name
+            } else {
+                format!("CAST({} AS TEXT) as {}", col_name, col_name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn generate_from_row_impl(model: &Model) -> TokenStream {
@@ -71,21 +100,44 @@ pub fn generate_from_row_impl(model: &Model) -> TokenStream {
     }
 }
 
-pub fn pk_args(model: &Model) -> (Vec<proc_macro2::Ident>, Vec<TokenStream>, Vec<String>, Vec<String>, Vec<TokenStream>) {
-    let pk_fields: Vec<_> = model.fields.iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+pub fn pk_args(
+    model: &Model,
+) -> (
+    Vec<proc_macro2::Ident>,
+    Vec<TokenStream>,
+    Vec<String>,
+    Vec<String>,
+    Vec<TokenStream>,
+) {
+    let pk_fields: Vec<_> = model
+        .fields
+        .iter()
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
-    let pk_names: Vec<_> = pk_fields.iter().map(|pk| format_ident!("{}", to_snake_case(&pk.name))).collect();
-    let pk_types: Vec<_> = pk_fields.iter().map(|pk| {
-        let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
-        rust_type_from_schema(&pk.type_name, is_nullable)
-    }).collect();
+    let pk_names: Vec<_> = pk_fields
+        .iter()
+        .map(|pk| format_ident!("{}", to_snake_case(&pk.name)))
+        .collect();
+    let pk_types: Vec<_> = pk_fields
+        .iter()
+        .map(|pk| {
+            let is_nullable = pk.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
+            rust_type_from_schema(&pk.type_name, is_nullable)
+        })
+        .collect();
     let pk_cols: Vec<_> = pk_fields.iter().map(|pk| to_snake_case(&pk.name)).collect();
     let pk_placeholders: Vec<_> = (1..=pk_fields.len()).map(|i| format!("${}", i)).collect();
-    let pk_arg_refs: Vec<_> = pk_fields.iter().map(|pk| {
-        let name = format_ident!("{}", to_snake_case(&pk.name));
-        quote! { &#name }
-    }).collect();
+    let pk_arg_refs: Vec<_> = pk_fields
+        .iter()
+        .map(|pk| {
+            let name = format_ident!("{}", to_snake_case(&pk.name));
+            quote! { &#name }
+        })
+        .collect();
     (pk_names, pk_types, pk_cols, pk_placeholders, pk_arg_refs)
 }
 
@@ -172,7 +224,13 @@ pub fn generate_where_methods_with_equals<'a>(
     generate_where_methods_inner(model, target_args, target_fragments, true)
 }
 
-pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_field: &'a str, vec_field: Option<&'a str>, fragments_field: Option<&'a str>) -> impl Iterator<Item = TokenStream> + 'a {
+pub fn generate_set_methods<'a>(
+    model: &'a Model,
+    use_hashmap: bool,
+    hashmap_field: &'a str,
+    vec_field: Option<&'a str>,
+    fragments_field: Option<&'a str>,
+) -> impl Iterator<Item = TokenStream> + 'a {
     model.fields.iter().map(move |field| {
         let method_name = format_ident!("set_{}", to_snake_case(&field.name));
         let is_nullable = field.modifiers.iter().any(|m| matches!(m, Modifier::Nullable));
@@ -237,7 +295,11 @@ pub fn generate_set_methods<'a>(model: &'a Model, use_hashmap: bool, hashmap_fie
     })
 }
 
-pub fn generate_inc_methods<'a>(model: &'a Model, target_ops: &'a str, target_values: Option<&'a str>) -> impl Iterator<Item = TokenStream> + 'a {
+pub fn generate_inc_methods<'a>(
+    model: &'a Model,
+    target_ops: &'a str,
+    target_values: Option<&'a str>,
+) -> impl Iterator<Item = TokenStream> + 'a {
     model.fields.iter()
         .filter(|f| is_numeric_type(&f.type_name))
         .map(move |field| {

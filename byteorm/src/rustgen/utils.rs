@@ -581,7 +581,6 @@ pub fn generate_jsonb_sub_accessors(
     }).collect()
 }
 
-
 pub fn generate_field_gets(model: &crate::Model) -> impl Iterator<Item = TokenStream> + '_ {
     model.fields.iter().map(|field| {
         let field_name = format_ident!("{}", field.name);
@@ -597,20 +596,36 @@ pub fn is_numeric_type(ty: &str) -> bool {
 pub fn is_builtin_type(ty: &str) -> bool {
     matches!(
         ty,
-        "BigInt" | "Int" | "String" | "JsonB" | "Jsonb" | "TimestamptZ" | "Timestamp" 
-        | "Boolean" | "Float" | "Serial" | "Real" | "Text" | "Date"
+        "BigInt"
+            | "Int"
+            | "String"
+            | "JsonB"
+            | "Jsonb"
+            | "TimestamptZ"
+            | "Timestamp"
+            | "Boolean"
+            | "Float"
+            | "Serial"
+            | "Real"
+            | "Text"
+            | "Date"
     )
 }
 
 pub fn generate_select_columns(model: &crate::Model) -> String {
-    model.fields.iter().map(|field| {
-        let col_name = to_snake_case(&field.name);
-        if is_builtin_type(&field.type_name) {
-            col_name
-        } else {
-            format!("CAST({} AS TEXT) as {}", col_name, col_name)
-        }
-    }).collect::<Vec<_>>().join(", ")
+    model
+        .fields
+        .iter()
+        .map(|field| {
+            let col_name = to_snake_case(&field.name);
+            if is_builtin_type(&field.type_name) {
+                col_name
+            } else {
+                format!("CAST({} AS TEXT) as {}", col_name, col_name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn generate_inc_methods(

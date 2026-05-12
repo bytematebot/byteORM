@@ -1,6 +1,6 @@
 use crate::rustgen::{
-    generate_select_columns, generate_set_methods, generate_where_methods, rust_type_from_schema,
-    to_snake_case, is_builtin_type,
+    generate_select_columns, generate_set_methods, generate_where_methods, is_builtin_type,
+    rust_type_from_schema, to_snake_case,
 };
 use crate::{Model, Modifier};
 use proc_macro2::TokenStream;
@@ -159,4 +159,3 @@ pub fn generate_create_builder(model: &Model) -> TokenStream {
         }
     }
 }
-

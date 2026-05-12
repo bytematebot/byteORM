@@ -1,5 +1,5 @@
-use crate::types::*;
 use crate::codegen::utils::*;
+use crate::types::*;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -14,7 +14,11 @@ impl<'a> FieldCategories<'a> {
         let mut numeric_fields = Vec::new();
 
         for field in &model.fields {
-            if field.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)) {
+            if field
+                .modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+            {
                 pk_fields.push(field);
             }
             if is_numeric_type(&field.type_name) {
@@ -22,7 +26,10 @@ impl<'a> FieldCategories<'a> {
             }
         }
 
-        Self { pk_fields, numeric_fields }
+        Self {
+            pk_fields,
+            numeric_fields,
+        }
     }
 }
 
@@ -30,7 +37,11 @@ fn generate_find_unique(model_name: &proc_macro2::Ident, model: &Model) -> Token
     let pk_fields: Vec<_> = model
         .fields
         .iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     if pk_fields.is_empty() {
@@ -77,7 +88,11 @@ fn generate_find_or_create(
     let pk_fields: Vec<_> = model
         .fields
         .iter()
-        .filter(|f| f.modifiers.iter().any(|m| matches!(m, Modifier::PrimaryKey)))
+        .filter(|f| {
+            f.modifiers
+                .iter()
+                .any(|m| matches!(m, Modifier::PrimaryKey))
+        })
         .collect();
 
     if pk_fields.is_empty() {
@@ -148,6 +163,9 @@ pub fn generate_accessor(model: &Model) -> TokenStream {
     let categories = FieldCategories::from_model(model);
     let model_name = format_ident!("{}", model.name);
     let accessor_struct = format_ident!("{}Accessor", model.name);
+    let conflict_field = format_ident!("{}ConflictField", model.name);
+    let conflict_selector = format_ident!("{}ConflictSelector", model.name);
+    let conflict_target = format_ident!("{}ConflictTarget", model.name);
     let query_builder = format_ident!("{}Query", model.name);
     let update_builder = format_ident!("{}Update", model.name);
     let upsert_builder = format_ident!("{}Upsert", model.name);
@@ -158,6 +176,56 @@ pub fn generate_accessor(model: &Model) -> TokenStream {
 
     let find_unique = generate_find_unique(&model_name, model);
     let find_or_create = generate_find_or_create(&model_name, model, &table_name);
+    let required_fields: Vec<String> = model
+        .fields
+        .iter()
+        .filter(|field| {
+            !field.attributes.iter().any(|a| a.name == "default")
+                && !field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, Modifier::Nullable))
+                && field.type_name != "Serial"
+        })
+        .map(|field| to_snake_case(&field.name))
+        .collect();
+
+    let enum_cast_entries: Vec<TokenStream> = model
+        .fields
+        .iter()
+        .filter(|field| !is_builtin_type(&field.type_name))
+        .map(|field| {
+            let col_name = to_snake_case(&field.name);
+            let type_name = field.type_name.to_lowercase();
+            quote! { (#col_name, #type_name) }
+        })
+        .collect();
+
+    let conflict_selector_fields = model.fields.iter().map(|field| {
+        let field_name = format_ident!("{}", to_snake_case(&field.name));
+        quote! { pub #field_name: #conflict_field }
+    });
+
+    let conflict_selector_inits = model.fields.iter().map(|field| {
+        let field_name = format_ident!("{}", to_snake_case(&field.name));
+        let column_name = to_snake_case(&field.name);
+        quote! { #field_name: #conflict_field::new(#column_name) }
+    });
+
+    let conflict_target_tuple_impls = (2..=model.fields.len()).map(|arity| {
+        let tuple_types = (0..arity).map(|_| quote! { #conflict_field });
+        let tuple_fields: Vec<_> = (0..arity).map(|i| format_ident!("f{}", i)).collect();
+        let tuple_values = tuple_fields.iter();
+
+        quote! {
+            impl #conflict_target for (#(#tuple_types),*) {
+                fn columns(self) -> Vec<&'static str> {
+                    let (#(#tuple_fields),*) = self;
+                    vec![#(#tuple_values.name()),*]
+                }
+            }
+        }
+    });
 
     let typed_agg_methods = {
         let field_methods = categories.numeric_fields.iter().map(|field| {
@@ -215,14 +283,58 @@ pub fn generate_accessor(model: &Model) -> TokenStream {
     };
 
     let jsonb_fields = crate::codegen::jsonb::generate_jsonb_accessor_fields(model);
-    let jsonb_struct_fields: Vec<_> = jsonb_fields.iter().map(|(name, typ)| {
-        quote! { pub #name: #typ }
-    }).collect();
-    let jsonb_inits: Vec<_> = jsonb_fields.iter().map(|(name, typ)| {
-        quote! { #name: #typ::new(pool.clone()) }
-    }).collect();
+    let jsonb_struct_fields: Vec<_> = jsonb_fields
+        .iter()
+        .map(|(name, typ)| {
+            quote! { pub #name: #typ }
+        })
+        .collect();
+    let jsonb_inits: Vec<_> = jsonb_fields
+        .iter()
+        .map(|(name, typ)| {
+            quote! { #name: #typ::new(pool.clone()) }
+        })
+        .collect();
 
     quote! {
+        #[derive(Clone, Copy)]
+        pub struct #conflict_field(&'static str);
+
+        impl #conflict_field {
+            pub fn new(name: &'static str) -> Self {
+                Self(name)
+            }
+
+            pub fn name(self) -> &'static str {
+                self.0
+            }
+        }
+
+        pub trait #conflict_target {
+            fn columns(self) -> Vec<&'static str>;
+        }
+
+        impl #conflict_target for #conflict_field {
+            fn columns(self) -> Vec<&'static str> {
+                vec![self.name()]
+            }
+        }
+
+        #(#conflict_target_tuple_impls)*
+
+        #[derive(Clone, Copy)]
+        pub struct #conflict_selector {
+            #(#conflict_selector_fields),*
+        }
+
+        impl #conflict_selector {
+            pub fn new() -> Self {
+                Self {
+                    #(#conflict_selector_inits),*
+                }
+            }
+        }
+
         #[derive(Clone)]
         pub struct #accessor_struct {
             pool: ConnectionPool,
@@ -383,6 +495,174 @@ pub fn generate_accessor(model: &Model) -> TokenStream {
                     all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
                 let result = client.execute(&sql, &params[..]).await?;
                 Ok(result)
+            }
+
+            pub async fn upsert_many<T, K, FC, FU>(
+                &self,
+                records: Vec<T>,
+                conflict: impl FnOnce(#conflict_selector) -> K,
+                mut create: FC,
+                mut update: FU,
+            ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
+            where
+                T: Clone,
+                K: #conflict_target,
+                FC: FnMut(#create_builder, T) -> #create_builder,
+                FU: FnMut(#update_builder, T) -> #update_builder,
+            {
+                if records.is_empty() {
+                    return Ok(0);
+                }
+
+                let conflict_columns = conflict(#conflict_selector::new()).columns();
+                if conflict_columns.is_empty() {
+                    return Err("Conflict target cannot be empty".into());
+                }
+
+                let mut seen_conflict_columns = std::collections::HashSet::new();
+                for column in &conflict_columns {
+                    if !seen_conflict_columns.insert(*column) {
+                        return Err(format!("Duplicate conflict column: {}", column).into());
+                    }
+                }
+
+                let client = self.pool.get().await.map_err(|_| "Failed to get connection from pool")?;
+                client.execute("BEGIN", &[]).await?;
+
+                let result = async {
+                    let enum_casts: std::collections::HashMap<&str, &str> = [
+                        #(#enum_cast_entries),*
+                    ].into_iter().collect();
+                    let required_fields: Vec<&str> = vec![#(#required_fields),*];
+                    let conflict_clause = conflict_columns.join(", ");
+                    let mut affected_rows = 0u64;
+
+                    for record in records {
+                        let create_builder = create(#create_builder::new(self.pool.clone()), record.clone());
+                        let update_builder = update(#update_builder::new(self.pool.clone()), record);
+
+                        let #create_builder {
+                            where_fragments: create_where_fragments,
+                            set_values: mut create_set_values,
+                            ..
+                        } = create_builder;
+
+                        let #update_builder {
+                            where_fragments: update_where_fragments,
+                            set_fragments: update_set_fragments,
+                            set_args: update_set_args,
+                            inc_ops: update_inc_ops,
+                            ..
+                        } = update_builder;
+
+                        if !create_where_fragments.is_empty() {
+                            return Err("upsert_many does not support create where clauses".into());
+                        }
+
+                        if !update_where_fragments.is_empty() {
+                            return Err("upsert_many does not support update where clauses".into());
+                        }
+
+                        for req in &required_fields {
+                            if !create_set_values.contains_key(req) {
+                                return Err(format!("Missing required field: {}", req).into());
+                            }
+                        }
+
+                        if create_set_values.is_empty() {
+                            return Err("No fields to upsert".into());
+                        }
+
+                        for conflict_col in &conflict_columns {
+                            if !create_set_values.contains_key(conflict_col) {
+                                return Err(format!("Missing conflict field in create builder: {}", conflict_col).into());
+                            }
+                        }
+
+                        if update_set_fragments.len() != update_set_args.len() {
+                            return Err("Invalid update builder state".into());
+                        }
+
+                        let mut insert_columns: Vec<&str> = create_set_values.keys().copied().collect();
+                        insert_columns.sort();
+                        let columns_str = insert_columns.join(", ");
+                        let insert_placeholders: Vec<String> = insert_columns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, col)| {
+                                let idx = i + 1;
+                                if let Some(enum_type) = enum_casts.get(col) {
+                                    format!("${}::TEXT::{}", idx, enum_type)
+                                } else {
+                                    format!("${}", idx)
+                                }
+                            })
+                            .collect();
+                        let placeholders_str = insert_placeholders.join(", ");
+
+                        let mut all_params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = vec![];
+                        for col in &insert_columns {
+                            all_params.push(create_set_values.remove(col).unwrap());
+                        }
+
+                        let mut update_clauses: Vec<String> = vec![];
+                        let mut param_idx = all_params.len() + 1;
+
+                        for (col, arg) in update_set_fragments.iter().zip(update_set_args.into_iter()) {
+                            if let Some(enum_type) = enum_casts.get(col) {
+                                update_clauses.push(format!("{} = ${}::TEXT::{}", col, param_idx, enum_type));
+                            } else {
+                                update_clauses.push(format!("{} = ${}", col, param_idx));
+                            }
+                            all_params.push(arg);
+                            param_idx += 1;
+                        }
+
+                        for (field, op, value) in update_inc_ops {
+                            let clause = match op {
+                                "inc" => format!("{} = COALESCE({}.{}, 0) + ${}", field, #table_name, field, param_idx),
+                                "dec" => format!("{} = COALESCE({}.{}, 0) - ${}", field, #table_name, field, param_idx),
+                                "mul" => format!("{} = COALESCE({}.{}, 0) * ${}", field, #table_name, field, param_idx),
+                                "div" => format!("{} = COALESCE({}.{}, 0) / ${}", field, #table_name, field, param_idx),
+                                _ => return Err(format!("Unsupported update operation: {}", op).into()),
+                            };
+                            update_clauses.push(clause);
+                            all_params.push(Box::new(value));
+                            param_idx += 1;
+                        }
+
+                        let sql = if update_clauses.is_empty() {
+                            format!(
+                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
+                                #table_name, columns_str, placeholders_str, conflict_clause
+                            )
+                        } else {
+                            format!(
+                                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
+                                #table_name, columns_str, placeholders_str, conflict_clause, update_clauses.join(", ")
+                            )
+                        };
+
+                        debug::log_query(&sql, all_params.len());
+
+                        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                            all_params.iter().map(|b| b.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+                        affected_rows += client.execute(&sql, &params[..]).await?;
+                    }
+
+                    Ok(affected_rows)
+                }.await;
+
+                match result {
+                    Ok(affected_rows) => {
+                        client.execute("COMMIT", &[]).await?;
+                        Ok(affected_rows)
+                    }
+                    Err(err) => {
+                        let _ = client.execute("ROLLBACK", &[]).await;
+                        Err(err)
+                    }
+                }
             }
 
             #find_unique

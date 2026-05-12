@@ -9,7 +9,11 @@ fn main() {
     let dest_path = Path::new(&out_dir).join("embedded_macros.rs");
     let mut f = fs::File::create(&dest_path).unwrap();
 
-    writeln!(f, "pub fn embedded_macros_files() -> Vec<(&'static str, &'static str)> {{").unwrap();
+    writeln!(
+        f,
+        "pub fn embedded_macros_files() -> Vec<(&'static str, &'static str)> {{"
+    )
+    .unwrap();
     writeln!(f, "    vec![").unwrap();
 
     embed_dir(&mut f, macros_dir, macros_dir);
